@@ -136,3 +136,8 @@ struct AttachmentStats: Sendable, Equatable {
     var formattedTotal: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
     var formattedLargest: String { ByteCountFormatter.string(fromByteCount: largestBytes, countStyle: .file) }
 }
+
+
+extension Notification.Name {
+    static let tongmdPasteFailed = Notification.Name("dev.tong.TongMD.pasteFailed")
+}

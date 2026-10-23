@@ -39,6 +39,9 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             model.flushPendingSave()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .tongmdPasteFailed)) { note in
+            model.alertMessage = note.userInfo?["message"] as? String ?? "图片保存失败"
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             // 退出前把 debounce 里还没写盘的内容落掉
             model.flushPendingSave()
@@ -677,6 +680,7 @@ struct EditorPane: View {
                 fontSize: CGFloat(model.fontSize),
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
+                fallbackAttachmentDirectory: model.vaultURL,
                 scrollTarget: model.pendingScrollRange,
                 onScrollHandled: { model.pendingScrollRange = nil }
             )
@@ -695,6 +699,7 @@ struct EditorPane: View {
                 fontSize: CGFloat(model.fontSize),
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
+                fallbackAttachmentDirectory: model.vaultURL,
                 scrollTarget: model.pendingScrollRange,
                 onScrollHandled: { model.pendingScrollRange = nil }
             )

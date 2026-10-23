@@ -258,6 +258,26 @@ enum SelfTest {
             let notFound = GitResult(code: 128, output: "", error: "remote: Repository not found.")
             check("仓库不存在有对应提示", GitEngine.friendlyMessage(for: notFound).contains("仓库不存在"))
 
+            print("截图粘贴")
+            let pasteDir = root.appendingPathComponent("paste-note")
+            try FileManager.default.createDirectory(at: pasteDir, withIntermediateDirectories: true)
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.tong.TongMD.selftest"))
+            pasteboard.clearContents()
+            let pasteImage = NSImage(size: NSSize(width: 24, height: 24))
+            pasteImage.lockFocus()
+            NSColor.systemBlue.setFill()
+            NSRect(x: 0, y: 0, width: 24, height: 24).fill()
+            pasteImage.unlockFocus()
+            pasteboard.writeObjects([pasteImage])
+
+            let pasteView = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+            pasteView.attachmentDirectory = pasteDir
+            let pasted = pasteView.insertPastedImage(from: pasteboard)
+            check("能识别剪贴板里的图片", pasted)
+            let pastedFiles = (try? FileManager.default.contentsOfDirectory(atPath: pasteDir.appendingPathComponent("assets").path)) ?? []
+            check("图片写进了 assets/", pastedFiles.contains { $0.hasSuffix(".png") })
+            check("插入了 Markdown 引用", pasteView.string.contains("(assets/") && pasteView.string.contains("!["))
+
             print("列表稳定性")
             let stableRoot = root.appendingPathComponent("stable")
             try FileManager.default.createDirectory(at: stableRoot, withIntermediateDirectories: true)

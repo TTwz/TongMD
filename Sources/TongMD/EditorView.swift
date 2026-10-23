@@ -11,6 +11,8 @@ struct MarkdownEditor: NSViewRepresentable {
     var plainText: Bool = false
     /// 当前笔记路径：粘贴图片时用来决定 assets/ 位置
     var noteURL: URL? = nil
+    /// 没有打开笔记时的兜底目录（笔记库根）
+    var fallbackAttachmentDirectory: URL? = nil
     /// 从搜索结果跳进来时要滚动并选中的位置
     var scrollTarget: NSRange? = nil
     var onScrollHandled: () -> Void = {}
@@ -64,7 +66,7 @@ struct MarkdownEditor: NSViewRepresentable {
         highlighter.isPlainText = plainText
         highlighter.textView = textView
         textView.isPlainText = plainText
-        textView.attachmentDirectory = noteURL?.deletingLastPathComponent()
+        textView.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
         textView.highlighter = highlighter
         textView.textStorage?.delegate = highlighter
         context.coordinator.highlighter = highlighter
@@ -85,7 +87,7 @@ struct MarkdownEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
-        (textView as? MarkdownTextView)?.attachmentDirectory = noteURL?.deletingLastPathComponent()
+        (textView as? MarkdownTextView)?.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
 
         // 纯文本/Markdown 模式切换
         if let highlighter = context.coordinator.highlighter,

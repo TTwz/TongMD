@@ -13,13 +13,14 @@ final class MarkdownTextView: NSTextView {
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
 
     override func paste(_ sender: Any?) {
-        if insertPastedImage() { return }
+        if insertPastedImage(from: .general) { return }
         super.paste(sender)
     }
 
-    private func insertPastedImage() -> Bool {
+    /// 返回 true 表示这次粘贴已经被当作图片处理掉了
+    @discardableResult
+    func insertPastedImage(from pasteboard: NSPasteboard) -> Bool {
         guard let directory = attachmentDirectory else { return false }
-        let pasteboard = NSPasteboard.general
 
         if let urls = pasteboard.readObjects(
             forClasses: [NSURL.self],
@@ -35,8 +36,20 @@ final class MarkdownTextView: NSTextView {
             )
         }
 
-        if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
-           let rep = NSBitmapImageRep(data: data),
+        // 截图通常在剪贴板里是 TIFF/PNG，个别工具给 JPEG/HEIC
+        let bitmapTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg"), .init("public.heic")]
+        for type in bitmapTypes {
+            if let data = pasteboard.data(forType: type),
+               let rep = NSBitmapImageRep(data: data),
+               let png = rep.representation(using: .png, properties: [:]) {
+                return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
+            }
+        }
+
+        // 兜底：让 AppKit 自己从剪贴板取图（有些 App 用自定义类型）
+        if let image = NSImage(pasteboard: pasteboard),
+           let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
             return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
         }
@@ -48,6 +61,7 @@ final class MarkdownTextView: NSTextView {
         do {
             try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
         } catch {
+            reportPasteFailure(error)
             return false
         }
 
@@ -62,6 +76,7 @@ final class MarkdownTextView: NSTextView {
         do {
             try data.write(to: fileURL)
         } catch {
+            reportPasteFailure(error)
             return false
         }
 
@@ -69,6 +84,15 @@ final class MarkdownTextView: NSTextView {
         let markup = isPlainText ? relative : "![\(safeName)](\(relative))"
         insertText(markup, replacementRange: selectedRange())
         return true
+    }
+
+    private func reportPasteFailure(_ error: Error) {
+        NSSound.beep()
+        NotificationCenter.default.post(
+            name: .tongmdPasteFailed,
+            object: nil,
+            userInfo: ["message": "图片没能保存到 assets/：\(error.localizedDescription)"]
+        )
     }
 
     static func sanitizeAttachmentName(_ name: String) -> String {
