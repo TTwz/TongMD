@@ -74,17 +74,6 @@ struct TongMDCommands: Commands {
             Button("设置…") { model.showSettings = true }
                 .keyboardShortcut(",", modifiers: .command)
         }
-        CommandGroup(replacing: .pasteboard) {
-            Button("剪切") { NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil) }
-                .keyboardShortcut("x", modifiers: .command)
-            Button("复制") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
-                .keyboardShortcut("c", modifiers: .command)
-            Button("粘贴") { model.pasteFromClipboard() }
-                .keyboardShortcut("v", modifiers: .command)
-            Button("全选") { NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil) }
-                .keyboardShortcut("a", modifiers: .command)
-        }
-
         CommandGroup(after: .textEditing) {
             Button("查找笔记") { model.searchFocusToken += 1 }
                 .keyboardShortcut("f", modifiers: .command)

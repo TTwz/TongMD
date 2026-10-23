@@ -501,6 +501,54 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 侧栏文件复制 / 粘贴
+
+    /// ⌘C：把侧栏选中的文件写进剪贴板（Finder 也能接）
+    func copySidebarSelection() -> Bool {
+        let urls = Array(sidebarSelection)
+        guard !urls.isEmpty else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.writeObjects(urls as [NSURL])
+    }
+
+    /// ⌘V：把剪贴板里的文件复制到目标目录（选中的文件夹，或当前笔记所在目录）
+    func pasteFilesFromPasteboard() -> Bool {
+        let pasteboard = NSPasteboard.general
+        guard let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty else {
+            return false
+        }
+        guard let target = sidebarTargetDirectory() else { return false }
+
+        var copied = 0
+        for url in urls {
+            let name = url.lastPathComponent
+            guard !name.hasPrefix(".") else { continue }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            let destination = Self.uniqueDestination(for: target.appendingPathComponent(name), isDirectory: false)
+            if (try? FileManager.default.copyItem(at: url, to: destination)) != nil {
+                copied += 1
+            }
+        }
+
+        guard copied > 0 else { return false }
+        reloadNotes()
+        infoMessage = "已复制 \(copied) 个文件到「\(Self.relativePath(of: target, root: vaultURL ?? target))」"
+        return true
+    }
+
+    private func sidebarTargetDirectory() -> URL? {
+        if sidebarSelection.count == 1, let url = sidebarSelection.first {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            return isDirectory ? url : url.deletingLastPathComponent()
+        }
+        if let selection { return selection.deletingLastPathComponent() }
+        return vaultURL
+    }
+
     /// 移动当前侧栏选中的所有条目
     func moveSelection(to folder: URL) {
         let urls = Array(sidebarSelection)
@@ -824,9 +872,9 @@ final class AppModel: ObservableObject {
         previewHTML = Markdown.document(body: body, fontSize: CGFloat(fontSize) + 1)
     }
 
-    /// ⌘V 兜底：焦点不在文本视图时（点到了编辑区空白、滚动条、窗口本身），
-    /// 系统会把 paste: 发给 scroll view / window，永远走不到文档视图。
-    /// 这里接管这种情况，直接把粘贴交给编辑器。
+    /// ⌘V 的兜底，只在一种情况下介入：
+    /// 剪贴板里是**图片数据**、焦点又不在任何文本视图上（例如点在了编辑区空白处）。
+    /// 其它情况一律还给系统，避免抢掉侧栏的文件复制/粘贴和普通文本粘贴。
     private func installPasteFallback() {
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -835,13 +883,24 @@ final class AppModel: ObservableObject {
             guard event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
             guard let window = NSApp.keyWindow else { return event }
 
-            // 输入框、编辑器自己被聚焦时，交给系统默认行为
+            // 输入框/编辑器自己处理
             if window.firstResponder is NSTextView { return event }
 
+            let pasteboard = NSPasteboard.general
+            let key = event.charactersIgnoringModifiers?.lowercased()
+
+            // 侧栏文件复制/粘贴：只在没有文本框聚焦时生效
+            if key == "c", self.copySidebarSelection() { return nil }
+            if key == "v", self.pasteFilesFromPasteboard() { return nil }
+
+            // 剪贴板里是文件但没粘贴成功 → 不劫持，交回系统
+            if pasteboard.types?.contains(.fileURL) == true { return event }
+
+            // 只有图片数据才接管
+            guard ImageClipboard.pngData(from: pasteboard) != nil else { return event }
+
             guard let editor = Self.findEditor(in: window.contentView) else { return event }
-            if editor.insertPastedImage(from: .general) {
-                return nil
-            }
+            if editor.insertPastedImage(from: pasteboard) { return nil }
             return event
         }
     }
@@ -1073,27 +1132,6 @@ final class AppModel: ObservableObject {
             return nil
         }
         return permissions["push"] as? Bool
-    }
-
-    /// ⌘V 的实际处理：优先给编辑器，其次给正在输入的文本框，最后兜底到编辑器
-    func pasteFromClipboard() {
-        guard let window = NSApp.keyWindow else { return }
-        let responder = window.firstResponder
-
-        if let editor = responder as? MarkdownTextView {
-            editor.paste(nil)
-            return
-        }
-        if let textView = responder as? NSTextView {
-            // 例如 Token 输入框：走系统默认粘贴
-            textView.paste(nil)
-            return
-        }
-        if let editor = Self.findEditor(in: window.contentView) {
-            editor.paste(nil)
-            return
-        }
-        insertScreenshotFromClipboard()
     }
 
     /// 菜单入口：不依赖焦点和编辑模式，一定能把剪贴板截图落盘
