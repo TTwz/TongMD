@@ -98,6 +98,8 @@ struct TongMDCommands: Commands {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
             Button("代码块") { EditorActions.perform("toggleCodeBlock:") }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+            Button("插入剪贴板截图") { EditorActions.perform("insertImageFromClipboard:") }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
             Button("链接") { EditorActions.perform("insertMarkdownLink:") }
                 .keyboardShortcut("k", modifiers: .command)
 

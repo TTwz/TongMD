@@ -258,6 +258,18 @@ enum SelfTest {
             let notFound = GitResult(code: 128, output: "", error: "remote: Repository not found.")
             check("仓库不存在有对应提示", GitEngine.friendlyMessage(for: notFound).contains("仓库不存在"))
 
+            print("assets 不进侧栏")
+            let assetVault = root.appendingPathComponent("asset-vault")
+            let bookDir = assetVault.appendingPathComponent("book")
+            let assetsDir = bookDir.appendingPathComponent("assets")
+            try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+            try "img".write(to: assetsDir.appendingPathComponent("a.png"), atomically: true, encoding: .utf8)
+            try "笔记".write(to: bookDir.appendingPathComponent("b.md"), atomically: true, encoding: .utf8)
+            let assetTree = AppModel.buildTree(at: assetVault, root: assetVault)
+            check("侧栏不显示 assets 目录", !assetTree.contains { $0.name == "assets" })
+            check("笔记仍然显示", assetTree.first(where: { $0.name == "book" })?
+                .children?.contains(where: { $0.name == "b.md" }) == true)
+
             print("截图粘贴")
             let pasteDir = root.appendingPathComponent("paste-note")
             try FileManager.default.createDirectory(at: pasteDir, withIntermediateDirectories: true)
@@ -272,6 +284,10 @@ enum SelfTest {
 
             let pasteView = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
             pasteView.attachmentDirectory = pasteDir
+            let rawTIFF = pasteImage.tiffRepresentation ?? Data()
+            pasteboard.clearContents()
+            pasteboard.setData(rawTIFF, forType: .tiff)
+
             let pasted = pasteView.insertPastedImage(from: pasteboard)
             check("能识别剪贴板里的图片", pasted)
             let pastedFiles = (try? FileManager.default.contentsOfDirectory(atPath: pasteDir.appendingPathComponent("assets").path)) ?? []

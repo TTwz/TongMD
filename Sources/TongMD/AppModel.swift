@@ -300,7 +300,8 @@ final class AppModel: ObservableObject {
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             let name = url.lastPathComponent
             if isDirectory {
-                if name == ".git" || name == "node_modules" || name == ".obsidian" { continue }
+                // assets 是附件目录，不在侧栏里当成笔记文件夹展示
+                if name == ".git" || name == "node_modules" || name == ".obsidian" || name == "assets" { continue }
                 nodes.append(VaultNode(
                     url: url,
                     name: name,

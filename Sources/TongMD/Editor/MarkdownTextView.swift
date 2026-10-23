@@ -46,14 +46,37 @@ final class MarkdownTextView: NSTextView {
             }
         }
 
-        // 兜底：让 AppKit 自己从剪贴板取图（有些 App 用自定义类型）
+        // 通用兜底：任何 image 家族的 UTType / 延迟加载的图片都交给 AppKit
+        if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           let image = images.first,
+           let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return insertImage(png, name: "截图", ext: "png", into: directory)
+        }
+
         if let image = NSImage(pasteboard: pasteboard),
            let tiff = image.tiffRepresentation,
            let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
             return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
         }
+        // 仍然失败：把剪贴板实际类型抛给用户，方便定位是哪种格式没覆盖
+        let types = (pasteboard.types ?? []).map(\.rawValue).joined(separator: ", ")
+        NotificationCenter.default.post(
+            name: .tongmdPasteFailed,
+            object: nil,
+            userInfo: ["message": "没能从剪贴板读到图片。剪贴板里的类型是：\(types.isEmpty ? "（空）" : types)"]
+        )
         return false
+    }
+
+    /// 菜单「插入剪贴板截图」走这里：即使 ⌘V 被别的响应者截走也有入口
+    @objc func insertImageFromClipboard(_ sender: Any?) {
+        guard insertPastedImage(from: .general) else {
+            NSSound.beep()
+            return
+        }
     }
 
     private func insertImage(_ data: Data, name: String, ext: String, into directory: URL) -> Bool {
