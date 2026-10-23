@@ -270,6 +270,16 @@ enum SelfTest {
             check("笔记仍然显示", assetTree.first(where: { $0.name == "book" })?
                 .children?.contains(where: { $0.name == "b.md" }) == true)
 
+            print("附件存储")
+            let attDir = root.appendingPathComponent("att")
+            let firstPath = AttachmentStore.save(data: Data([1, 2]), name: "截图 1", into: attDir)
+            let secondPath = AttachmentStore.save(data: Data([3]), name: "截图 1", into: attDir)
+            check("返回 assets 相对路径", firstPath?.hasPrefix("assets/") == true)
+            check("重名自动加序号", firstPath != secondPath)
+            check("文件真的落盘", firstPath.map {
+                FileManager.default.fileExists(atPath: attDir.appendingPathComponent($0).path)
+            } == true)
+
             print("截图粘贴")
             let pasteDir = root.appendingPathComponent("paste-note")
             try FileManager.default.createDirectory(at: pasteDir, withIntermediateDirectories: true)

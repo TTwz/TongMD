@@ -158,6 +158,10 @@ struct MarkdownEditor: NSViewRepresentable {
     }
 }
 
+final class NonFocusableWebView: WKWebView {
+    override var acceptsFirstResponder: Bool { false }
+}
+
 struct MarkdownPreview: NSViewRepresentable {
     /// 完整文档，只在首次加载/切换笔记时用
     let document: String
@@ -169,7 +173,8 @@ struct MarkdownPreview: NSViewRepresentable {
     var onWikiLink: ((String) -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // 预览是只读的，不应该抢走编辑器的焦点：否则点了预览再按 ⌘V 会没有任何反应
+        let webView = NonFocusableWebView(frame: .zero, configuration: WKWebViewConfiguration())
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         return webView

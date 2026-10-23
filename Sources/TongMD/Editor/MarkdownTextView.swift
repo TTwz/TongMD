@@ -36,30 +36,8 @@ final class MarkdownTextView: NSTextView {
             )
         }
 
-        // 截图通常在剪贴板里是 TIFF/PNG，个别工具给 JPEG/HEIC
-        let bitmapTypes: [NSPasteboard.PasteboardType] = [.png, .tiff, .init("public.jpeg"), .init("public.heic")]
-        for type in bitmapTypes {
-            if let data = pasteboard.data(forType: type),
-               let rep = NSBitmapImageRep(data: data),
-               let png = rep.representation(using: .png, properties: [:]) {
-                return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
-            }
-        }
-
-        // 通用兜底：任何 image 家族的 UTType / 延迟加载的图片都交给 AppKit
-        if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
-           let image = images.first,
-           let tiff = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
+        if let png = ImageClipboard.pngData(from: pasteboard) {
             return insertImage(png, name: "截图", ext: "png", into: directory)
-        }
-
-        if let image = NSImage(pasteboard: pasteboard),
-           let tiff = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
-            return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
         }
         // 仍然失败：把剪贴板实际类型抛给用户，方便定位是哪种格式没覆盖
         let types = (pasteboard.types ?? []).map(\.rawValue).joined(separator: ", ")
@@ -80,31 +58,15 @@ final class MarkdownTextView: NSTextView {
     }
 
     private func insertImage(_ data: Data, name: String, ext: String, into directory: URL) -> Bool {
-        let assets = directory.appendingPathComponent("assets", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-        } catch {
-            reportPasteFailure(error)
+        guard let relative = AttachmentStore.save(data: data, name: name, ext: ext, into: directory) else {
+            reportPasteFailure(NSError(
+                domain: "TongMD", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "assets 目录不可写"]
+            ))
             return false
         }
 
-        let safeName = Self.sanitizeAttachmentName(name)
-        var fileURL = assets.appendingPathComponent("\(safeName).\(ext)")
-        var index = 2
-        while FileManager.default.fileExists(atPath: fileURL.path) {
-            fileURL = assets.appendingPathComponent("\(safeName)-\(index).\(ext)")
-            index += 1
-        }
-
-        do {
-            try data.write(to: fileURL)
-        } catch {
-            reportPasteFailure(error)
-            return false
-        }
-
-        let relative = "assets/\(fileURL.lastPathComponent)"
-        let markup = isPlainText ? relative : "![\(safeName)](\(relative))"
+        let markup = isPlainText ? relative : "![\(AttachmentStore.sanitize(name))](\(relative))"
         insertText(markup, replacementRange: selectedRange())
         return true
     }
@@ -119,6 +81,10 @@ final class MarkdownTextView: NSTextView {
     }
 
     static func sanitizeAttachmentName(_ name: String) -> String {
+        AttachmentStore.sanitize(name)
+    }
+
+    private static func legacySanitize(_ name: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_")).union(.init(charactersIn: "·"))
         var result = String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
         while result.contains("--") { result = result.replacingOccurrences(of: "--", with: "-") }

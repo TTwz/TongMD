@@ -19,6 +19,17 @@ struct RootView: View {
             MarkdownCheatSheet()
         }
         .alert(
+            "提示",
+            isPresented: Binding(
+                get: { model.infoMessage != nil },
+                set: { if !$0 { model.infoMessage = nil } }
+            )
+        ) {
+            Button("好") { model.infoMessage = nil }
+        } message: {
+            Text(model.infoMessage ?? "")
+        }
+        .alert(
             "出错了",
             isPresented: Binding(
                 get: { model.alertMessage != nil },

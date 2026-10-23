@@ -41,6 +41,7 @@ final class AppModel: ObservableObject {
     @Published var showSettings = false
     @Published var showCheatSheet = false
     @Published var alertMessage: String?
+    @Published var infoMessage: String?
 
     @Published private(set) var vaultPath: String? {
         didSet {
@@ -1038,6 +1039,54 @@ final class AppModel: ObservableObject {
             return nil
         }
         return permissions["push"] as? Bool
+    }
+
+    /// 菜单入口：不依赖焦点和编辑模式，一定能把剪贴板截图落盘
+    func insertScreenshotFromClipboard() {
+        if let textView = NSApp.keyWindow?.firstResponder as? MarkdownTextView,
+           textView.insertPastedImage(from: .general) {
+            return
+        }
+
+        guard let url = selection else {
+            alertMessage = "先打开一篇笔记，再插入截图。"
+            return
+        }
+        guard let png = ImageClipboard.pngData() else {
+            showPasteDiagnostics()
+            return
+        }
+        guard let relative = AttachmentStore.save(
+            data: png,
+            name: "截图",
+            into: url.deletingLastPathComponent()
+        ) else {
+            alertMessage = "截图没能写进 assets/，检查这个目录的写入权限。"
+            return
+        }
+
+        let markup = isPlainTextNote ? "\n\(relative)\n" : "\n![截图](\(relative))\n"
+        if mode == .preview { mode = .split }
+        textChanged(text + markup)
+        saveNow()
+        infoMessage = "已插入截图并保存为 \(relative)"
+    }
+
+    /// 排查粘贴问题：报告当前焦点在谁身上、剪贴板里到底有什么类型
+    func showPasteDiagnostics() {
+        let pasteboard = NSPasteboard.general
+        let types = (pasteboard.types ?? []).map(\.rawValue)
+        let responder = NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "无"
+        let hasTIFF = pasteboard.data(forType: .tiff)?.count ?? 0
+        let hasPNG = pasteboard.data(forType: .png)?.count ?? 0
+
+        infoMessage = """
+        焦点：\(responder)
+        TIFF 数据：\(hasTIFF) 字节
+        PNG 数据：\(hasPNG) 字节
+        剪贴板类型：
+        \(types.isEmpty ? "（空）" : types.joined(separator: "\n"))
+        """
     }
 
     func clearToken() {
