@@ -225,6 +225,17 @@ enum SelfTest {
             check("代理参数进入网络参数", GitEngine.networkArguments(token: "").contains("http.version=HTTP/1.1"))
             check("始终禁用外部凭据助手", GitEngine.networkArguments(token: "").contains("credential.helper="))
 
+            print("Token 存储")
+            TokenStore.directoryOverride = root.appendingPathComponent("token-store")
+            check("Token 可写入", TokenStore.save("github_pat_selftest"))
+            check("Token 可读回", TokenStore.load() == "github_pat_selftest")
+            let permissions = (try? FileManager.default.attributesOfItem(atPath: TokenStore.fileURL.path))?[.posixPermissions] as? Int
+            check("配置文件权限为 600", permissions == 0o600)
+            _ = TokenStore.save("")
+            check("清除后为空", TokenStore.load().isEmpty)
+            check("不写入时也能安全读取", TokenStore.load().isEmpty)
+            TokenStore.directoryOverride = nil
+
             print("凭据与权限")
             check("解析 API 地址", AppModel.apiURL(from: "https://github.com/TTwz/MarkDownFile.git")?.absoluteString
                 == "https://api.github.com/repos/TTwz/MarkDownFile")

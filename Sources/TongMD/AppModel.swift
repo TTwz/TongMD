@@ -27,11 +27,11 @@ final class AppModel: ObservableObject {
             if normalized.wasHex, normalized.value != token {
                 token = normalized.value
                 // didSet 不会因为内部赋值再次触发，这里补上落盘
-                _ = Keychain.set(normalized.value, account: "github-token")
+                _ = TokenStore.save(normalized.value)
                 return
             }
-            if !Keychain.set(token, account: "github-token") {
-                alertMessage = "Token 没能写进钥匙串（可能被系统拒绝），重启 App 后可能需要重新填写。"
+            if !TokenStore.save(token) {
+                alertMessage = "Token 没能保存到本机配置（~/Library/Application Support/TongMD），检查一下目录权限。"
             }
         }
     }
@@ -184,7 +184,7 @@ final class AppModel: ObservableObject {
         autoCommit = defaults.object(forKey: Keys.autoCommit) as? Bool ?? true
         mode = EditorMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .split
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 15
-        token = Keychain.get("github-token")
+        token = TokenStore.load()
 
         // 调试/脚本入口：TongMD --vault /path/to/notes
         if let index = CommandLine.arguments.firstIndex(of: "--vault"),

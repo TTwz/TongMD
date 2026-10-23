@@ -79,7 +79,7 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
                     }
 
-                    Text("Token 存在系统钥匙串里，只在 clone/pull/push 时通过 http.extraheader 临时传给 git，不会写进 .git/config。")
+                    Text("Token 存在 ~/Library/Application Support/TongMD/credentials.json（权限 600，仅当前用户可读），只在 clone/pull/push 时通过 http.extraheader 临时传给 git，不会写进 .git/config。改用文件是为了避开 ad-hoc 签名导致的钥匙串授权弹窗。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

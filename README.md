@@ -36,7 +36,9 @@ App 图标由 `scripts/make-icon.swift` 用代码画出来（改颜色或文字�
 2. ⌘, 打开设置，填仓库地址（`https://github.com/you/notes.git`）+ Personal Access Token，点「克隆仓库到此…」。
 3. 之后：左边是文件树，中间写作，右边预览。⌘N 新建，⌘S 保存，**⇧⌘S 同步到 GitHub**。
 
-Token 建议用 fine-grained PAT，只勾选目标仓库的 `Contents: Read and write`。它存在系统钥匙串里，调用 git 时通过 `http.extraheader` 临时传入，不会落到 `.git/config` 或磁盘上的明文文件。
+Token 建议用 fine-grained PAT，只勾选目标仓库的 `Contents: Read and write`。它存在 `~/Library/Application Support/TongMD/credentials.json`（权限 600），调用 git 时通过 `http.extraheader` 临时传入，不会写进 `.git/config`。
+
+> 为什么不用钥匙串：App 是 ad-hoc 签名，身份每次构建都会变，macOS 无法校验访问者，于是每次启动读 Token 都会弹「想要使用钥匙串中的机密信息」。改成 0600 文件后启动静默。代价是 Token 以明文存在本机（仅当前用户可读），如果你介意，可以用 SSH 地址完全不带 Token，或者给 App 做 Developer ID 签名。
 
 ## Token 怎么拿
 
@@ -71,8 +73,6 @@ gh auth login    # 选 GitHub.com → HTTPS → Login with a web browser
 | `403 Write access to repository not granted` | Token 有效，但只有读权限 | fine-grained token 把 Contents 改成 **Read and write**；用 gh 的话运行 `gh auth refresh -s repo` |
 | `Failed to connect ... port 443` | 网络没通，通常是没有走代理 | 确认代理软件在运行；App 会自动读取 macOS 系统代理 |
 | `Error in the HTTP2 framing layer` | 代理链路对 HTTP/2 不友好 | App 已强制 HTTP/1.1，一般不会再出现 |
-
-钥匙串提示：App 是 ad-hoc 签名，换了构建之后 macOS 可能弹一次「允许访问钥匙串」，选 **始终允许**，否则 Token 存不住。
 
 Token 会在使用前校验格式（必须以 `ghp_` / `github_pat_` 等开头）。如果粘贴进来的是十六进制字符串（有些工具会这么显示 Token），App 会自动还原；格式不对会立刻提示，而不是等到同步时才报一个看不懂的错。
 
@@ -245,6 +245,7 @@ open -n build/TongMD.app --args --vault "$PWD/.demo-vault"
 - 附件（图片）直接进 git，仓库会随图片增长；大图会拖慢 clone。
 - 外部改动靠「切回 App 时比对 mtime」发现，不是 FSEvents 实时监听。
 - 只做了 ad-hoc 签名，没有 Developer ID 公证；换机器传来时会被 Gatekeeper 拦一次（见上面的 `xattr` 命令）。
+- Token 以 0600 权限的明文文件存在本机，不再进钥匙串（原因见上面「Token 怎么拿」）。
 
 ## 下一步优先级建议
 
