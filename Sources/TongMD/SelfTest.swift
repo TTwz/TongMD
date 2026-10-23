@@ -247,6 +247,16 @@ enum SelfTest {
             let notFound = GitResult(code: 128, output: "", error: "remote: Repository not found.")
             check("仓库不存在有对应提示", GitEngine.friendlyMessage(for: notFound).contains("仓库不存在"))
 
+            print("列表稳定性")
+            let stableRoot = root.appendingPathComponent("stable")
+            try FileManager.default.createDirectory(at: stableRoot, withIntermediateDirectories: true)
+            let stableNote = stableRoot.appendingPathComponent("a.md")
+            try "第一版".write(to: stableNote, atomically: true, encoding: .utf8)
+            let treeBefore = AppModel.buildTree(at: stableRoot, root: stableRoot)
+            try "改了内容\n第二行".write(to: stableNote, atomically: true, encoding: .utf8)
+            let treeAfter = AppModel.buildTree(at: stableRoot, root: stableRoot)
+            check("内容变化不会改变树结构（避免列表重建）", treeBefore == treeAfter)
+
             print("文件监听")
             let watchRoot = root.appendingPathComponent("watch")
             try FileManager.default.createDirectory(at: watchRoot, withIntermediateDirectories: true)

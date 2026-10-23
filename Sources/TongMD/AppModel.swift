@@ -145,6 +145,9 @@ final class AppModel: ObservableObject {
     /// 双链跳转的历史，供 ⌘[ 返回
     private var navigationHistory: [URL] = []
     private var newFolderParent: URL?
+    private var lastReloadAt = Date.distantPast
+    private var lastAttachmentScanAt = Date.distantPast
+    private var lastPendingScanAt = Date.distantPast
     private let watcher = VaultWatcher()
     /// --vault 传进来的临时路径，不写进偏好设置，免得下次启动还停在演示库
     private var transientVault = false
@@ -223,9 +226,17 @@ final class AppModel: ObservableObject {
             return
         }
         watcher.onChange = { [weak self] in
-            guard let self else { return }
+            guard let self, !self.isDirty else { return }
+
+            // 只是当前这篇被外部改了：重载正文即可，不动侧栏
+            if let url = self.selection, Self.modificationDate(of: url) != self.loadedMTime {
+                self.loadSelected()
+                return
+            }
+
+            // 其它情况（增删改文件名）才重建列表，而且限频
+            guard Date().timeIntervalSince(self.lastReloadAt) > 1.5 else { return }
             self.reloadNotes()
-            self.refreshFromDiskIfNeeded()
         }
         watcher.start(vault)
     }
@@ -249,17 +260,26 @@ final class AppModel: ObservableObject {
             return
         }
 
-        tree = Self.buildTree(at: root, root: root)
-        notes = Self.flatten(tree)
+        let newTree = Self.buildTree(at: root, root: root)
+        let newNotes = Self.flatten(newTree)
             .filter { !$0.isDirectory }
             .map { Note(url: $0.url, root: root) }
+
+        // 关键：内容保存不会改变树结构，这里比较后再赋值，避免 SwiftUI 白白重建行
+        if newTree != tree { tree = newTree }
+        if newNotes != notes { notes = newNotes }
+        lastReloadAt = Date()
         refreshContentCache()
 
         if let selected = selection, !notes.contains(where: { $0.url == selected }) {
             selection = nil
         }
-        sidebarSelection = sidebarSelection.filter { FileManager.default.fileExists(atPath: $0.path) }
-        openTabs = openTabs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        // @Published 赋值会触发整棵视图刷新，内容没变就别赋值
+        let stillExisting = sidebarSelection.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if stillExisting != sidebarSelection { sidebarSelection = stillExisting }
+
+        let validTabs = openTabs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if validTabs != openTabs { openTabs = validTabs }
         refreshAttachmentStats()
         updateBacklinks()
         updatePendingChanges()
@@ -819,7 +839,13 @@ final class AppModel: ObservableObject {
 
     // MARK: - 附件体积
 
+    /// 设置页打开时主动刷一次
+    func refreshAttachmentStatsNow() {
+        refreshAttachmentStats()
+    }
+
     private func refreshAttachmentStats() {
+        lastAttachmentScanAt = Date()
         guard let root = vaultURL else {
             attachmentStats = AttachmentStats()
             return
@@ -1107,6 +1133,7 @@ final class AppModel: ObservableObject {
     }
 
     private func updatePendingChanges() {
+        lastPendingScanAt = Date()
         guard let vault = vaultURL else {
             pendingChanges = 0
             return

@@ -446,6 +446,8 @@ struct NodeRow: View {
         }
         .padding(.vertical, 1)
         .tag(node.url)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { model.openNote(node.url) })
         .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { noteMenu }
     }

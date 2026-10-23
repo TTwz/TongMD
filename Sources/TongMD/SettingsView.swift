@@ -152,5 +152,6 @@ struct SettingsView: View {
             .padding(12)
         }
         .frame(width: 560, height: 520)
+        .onAppear { model.refreshAttachmentStatsNow() }
     }
 }
