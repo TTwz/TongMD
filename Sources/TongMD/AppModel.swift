@@ -150,6 +150,7 @@ final class AppModel: ObservableObject {
     private var lastAttachmentScanAt = Date.distantPast
     private var lastPendingScanAt = Date.distantPast
     private let watcher = VaultWatcher()
+    private var pasteMonitor: Any?
     /// --vault 传进来的临时路径，不写进偏好设置，免得下次启动还停在演示库
     private var transientVault = false
 
@@ -200,6 +201,8 @@ final class AppModel: ObservableObject {
                 return
             }
         }
+
+        installPasteFallback()
 
         if let path = defaults.string(forKey: Keys.vault),
            FileManager.default.fileExists(atPath: path) {
@@ -821,6 +824,37 @@ final class AppModel: ObservableObject {
         previewHTML = Markdown.document(body: body, fontSize: CGFloat(fontSize) + 1)
     }
 
+    /// ⌘V 兜底：焦点不在文本视图时（点到了编辑区空白、滚动条、窗口本身），
+    /// 系统会把 paste: 发给 scroll view / window，永远走不到文档视图。
+    /// 这里接管这种情况，直接把粘贴交给编辑器。
+    private func installPasteFallback() {
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == .command else { return event }
+            guard event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+            guard let window = NSApp.keyWindow else { return event }
+
+            // 输入框、编辑器自己被聚焦时，交给系统默认行为
+            if window.firstResponder is NSTextView { return event }
+
+            guard let editor = Self.findEditor(in: window.contentView) else { return event }
+            if editor.insertPastedImage(from: .general) {
+                return nil
+            }
+            return event
+        }
+    }
+
+    private static func findEditor(in view: NSView?) -> MarkdownTextView? {
+        guard let view else { return nil }
+        if let editor = view as? MarkdownTextView { return editor }
+        for subview in view.subviews {
+            if let found = findEditor(in: subview) { return found }
+        }
+        return nil
+    }
+
     // MARK: - 标签页
 
     func closeTab(_ url: URL) {
@@ -1039,6 +1073,27 @@ final class AppModel: ObservableObject {
             return nil
         }
         return permissions["push"] as? Bool
+    }
+
+    /// ⌘V 的实际处理：优先给编辑器，其次给正在输入的文本框，最后兜底到编辑器
+    func pasteFromClipboard() {
+        guard let window = NSApp.keyWindow else { return }
+        let responder = window.firstResponder
+
+        if let editor = responder as? MarkdownTextView {
+            editor.paste(nil)
+            return
+        }
+        if let textView = responder as? NSTextView {
+            // 例如 Token 输入框：走系统默认粘贴
+            textView.paste(nil)
+            return
+        }
+        if let editor = Self.findEditor(in: window.contentView) {
+            editor.paste(nil)
+            return
+        }
+        insertScreenshotFromClipboard()
     }
 
     /// 菜单入口：不依赖焦点和编辑模式，一定能把剪贴板截图落盘

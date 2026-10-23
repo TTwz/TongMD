@@ -6,6 +6,20 @@ struct TongMDApp: App {
 
     init() {
         #if DEBUG
+        if CommandLine.arguments.contains("--dump-menu") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if let menu = NSApp.mainMenu {
+                    for item in menu.items {
+                        print("MENU:", item.title)
+                        for sub in item.submenu?.items ?? [] {
+                            let mask = sub.keyEquivalentModifierMask.rawValue
+                            print("  -", sub.title, "|key=\(sub.keyEquivalent)|mask=\(mask)|action=\(String(describing: sub.action))")
+                        }
+                    }
+                }
+                exit(0)
+            }
+        }
         if CommandLine.arguments.contains("--self-test") {
             exit(SelfTest.run())
         }
@@ -60,6 +74,17 @@ struct TongMDCommands: Commands {
             Button("设置…") { model.showSettings = true }
                 .keyboardShortcut(",", modifiers: .command)
         }
+        CommandGroup(replacing: .pasteboard) {
+            Button("剪切") { NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil) }
+                .keyboardShortcut("x", modifiers: .command)
+            Button("复制") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
+                .keyboardShortcut("c", modifiers: .command)
+            Button("粘贴") { model.pasteFromClipboard() }
+                .keyboardShortcut("v", modifiers: .command)
+            Button("全选") { NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil) }
+                .keyboardShortcut("a", modifiers: .command)
+        }
+
         CommandGroup(after: .textEditing) {
             Button("查找笔记") { model.searchFocusToken += 1 }
                 .keyboardShortcut("f", modifiers: .command)
