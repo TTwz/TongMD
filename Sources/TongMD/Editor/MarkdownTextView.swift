@@ -7,6 +7,77 @@ final class MarkdownTextView: NSTextView {
     var highlighter: MarkdownSyntaxHighlighter?
     /// .txt：禁用 Markdown 编辑动作（智能续行、插入标记）
     var isPlainText = false
+    /// 当前笔记所在目录：粘贴进来的图片会存到它的 assets/ 下
+    var attachmentDirectory: URL?
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
+
+    override func paste(_ sender: Any?) {
+        if insertPastedImage() { return }
+        super.paste(sender)
+    }
+
+    private func insertPastedImage() -> Bool {
+        guard let directory = attachmentDirectory else { return false }
+        let pasteboard = NSPasteboard.general
+
+        if let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL],
+           let imageURL = urls.first(where: { Self.imageExtensions.contains($0.pathExtension.lowercased()) }),
+           let data = try? Data(contentsOf: imageURL) {
+            return insertImage(
+                data,
+                name: imageURL.deletingPathExtension().lastPathComponent,
+                ext: imageURL.pathExtension.lowercased(),
+                into: directory
+            )
+        }
+
+        if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff),
+           let rep = NSBitmapImageRep(data: data),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return insertImage(png, name: "粘贴的图片", ext: "png", into: directory)
+        }
+        return false
+    }
+
+    private func insertImage(_ data: Data, name: String, ext: String, into directory: URL) -> Bool {
+        let assets = directory.appendingPathComponent("assets", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
+        let safeName = Self.sanitizeAttachmentName(name)
+        var fileURL = assets.appendingPathComponent("\(safeName).\(ext)")
+        var index = 2
+        while FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = assets.appendingPathComponent("\(safeName)-\(index).\(ext)")
+            index += 1
+        }
+
+        do {
+            try data.write(to: fileURL)
+        } catch {
+            return false
+        }
+
+        let relative = "assets/\(fileURL.lastPathComponent)"
+        let markup = isPlainText ? relative : "![\(safeName)](\(relative))"
+        insertText(markup, replacementRange: selectedRange())
+        return true
+    }
+
+    static func sanitizeAttachmentName(_ name: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_")).union(.init(charactersIn: "·"))
+        var result = String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+        while result.contains("--") { result = result.replacingOccurrences(of: "--", with: "-") }
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: "- "))
+        return result.isEmpty ? "image" : result
+    }
 
     override func insertNewline(_ sender: Any?) {
         // 中文输入法组字时，回车是「确认候选词」，绝不能在这里插换行或续列表，

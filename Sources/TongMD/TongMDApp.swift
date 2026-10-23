@@ -44,6 +44,9 @@ struct TongMDCommands: Commands {
         CommandGroup(replacing: .saveItem) {
             Button("保存") { model.saveNow() }
                 .keyboardShortcut("s", modifiers: .command)
+            Button("关闭标签页") { model.closeActiveTab() }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(model.openTabs.isEmpty)
             Button("同步到 GitHub") { model.sync() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(model.vaultURL == nil || model.isBusy)

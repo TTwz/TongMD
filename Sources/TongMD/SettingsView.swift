@@ -90,6 +90,27 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("附件与体积") {
+                    LabeledContent("附件") {
+                        Text("\(model.attachmentStats.count) 个 · \(model.attachmentStats.formattedTotal)")
+                            .foregroundStyle(.secondary)
+                    }
+                    if model.attachmentStats.count > 0 {
+                        LabeledContent("最大") {
+                            Text("\(model.attachmentStats.largestName) · \(model.attachmentStats.formattedLargest)")
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(model.attachmentStats.isLarge
+                         ? "附件偏大，git 仓库会跟着膨胀。建议压缩图片，或把大附件放到独立仓库 / 对象存储，必要时用 Git LFS。"
+                         : "粘贴图片会自动存到当前笔记所在目录的 assets/ 下，并以相对路径引用；单个文件超过 10MB 或总量超过 100MB 时这里会提醒。")
+                        .font(.caption)
+                        .foregroundStyle(model.attachmentStats.isLarge ? .orange : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Section("现有文件夹") {
                     HStack {
                         Button("初始化为 git 仓库") { model.initRepoHere() }

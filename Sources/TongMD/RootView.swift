@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
@@ -204,9 +205,22 @@ struct SidebarView: View {
             Divider()
             Button("在 Finder 中显示") { if let root = model.vaultURL { model.revealInFinder(root) } }
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            guard let root = model.vaultURL else { return false }
-            model.moveItems(urls, to: root)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(model.dropTarget == model.vaultURL ? Color.accentColor.opacity(0.22) : Color.clear)
+        )
+        .onDrop(of: [VaultDrag.multiType, UTType.fileURL.identifier],
+                isTargeted: Binding(
+                    get: { model.dropTarget == model.vaultURL },
+                    set: { targeted in
+                        if targeted { model.dropTarget = model.vaultURL }
+                        else if model.dropTarget == model.vaultURL { model.dropTarget = nil }
+                    }
+                )) { providers in
+            VaultDrag.urls(from: providers) { urls in
+                if let root = model.vaultURL { model.moveItems(urls, to: root) }
+                model.dropTarget = nil
+            }
             return true
         }
     }
@@ -230,27 +244,39 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 6)
 
-            List(selection: $model.sidebarSelection) {
-                ForEach(model.searchResults) { result in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Image(systemName: result.note.iconName)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            Text(result.note.title)
-                                .lineLimit(1)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(model.searchResults) { result in
+                        Button {
+                            model.openSearchResult(result.note)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: result.note.iconName)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                    Text(result.note.title)
+                                        .lineLimit(1)
+                                }
+                                Text(highlighted(result.snippet, terms: SearchEngine.terms(from: model.searchText)))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(
+                                model.selection == result.note.url
+                                    ? Color.accentColor.opacity(0.15)
+                                    : Color.clear
+                            )
                         }
-                        Text(highlighted(result.snippet, terms: SearchEngine.terms(from: model.searchText)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .buttonStyle(.plain)
                     }
-                    .padding(.vertical, 2)
-                    .tag(result.note.url)
                 }
             }
-            .listStyle(.sidebar)
         }
     }
 
@@ -293,6 +319,59 @@ struct SidebarView: View {
             return "\(folder) · \(model.notes.count) 篇 · 编辑中"
         }
         return "\(folder) · \(model.notes.count) 篇"
+    }
+}
+
+/// 拖拽载荷：单选时用标准 file-url（Finder 也能接收），多选时用自定义类型带一组路径
+enum VaultDrag {
+    static let multiType = "dev.tong.tongmd.paths"
+
+    static func provider(for url: URL, selection: Set<URL>) -> NSItemProvider {
+        let urls = selection.contains(url) && selection.count > 1 ? Array(selection) : [url]
+
+        if urls.count == 1, let file = NSItemProvider(contentsOf: urls[0]) {
+            return file
+        }
+
+        let provider = NSItemProvider()
+        provider.registerItem(forTypeIdentifier: multiType) { completion, _, _ in
+            let data = (try? JSONEncoder().encode(urls.map(\.path))) ?? Data()
+            completion?(data as NSData, nil)
+        }
+        return provider
+    }
+
+    static func urls(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        let lock = NSLock()
+        var paths: [String] = []
+        let group = DispatchGroup()
+
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(multiType) {
+                group.enter()
+                provider.loadItem(forTypeIdentifier: multiType) { item, _ in
+                    let data = item as? Data
+                    if let data, let list = try? JSONDecoder().decode([String].self, from: data) {
+                        lock.lock(); paths.append(contentsOf: list); lock.unlock()
+                    }
+                    group.leave()
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                group.enter()
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    var url: URL?
+                    if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                    else if let value = item as? URL { url = value }
+                    else if let string = item as? String { url = URL(string: string) }
+                    if let url { lock.lock(); paths.append(url.path); lock.unlock() }
+                    group.leave()
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            completion(paths.map { URL(fileURLWithPath: $0) })
+        }
     }
 }
 
@@ -342,10 +421,17 @@ struct NodeRow: View {
         .tag(node.url)
         .contentShape(Rectangle())
         .onTapGesture { isExpanded.wrappedValue.toggle() }
-        .draggable(node.url)
+        .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { folderMenu }
-        .dropDestination(for: URL.self) { urls, _ in
-            model.moveItems(urls, to: node.url)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(model.dropTarget == node.url ? Color.accentColor.opacity(0.22) : Color.clear)
+        )
+        .onDrop(of: [VaultDrag.multiType, UTType.fileURL.identifier], isTargeted: dropBinding(for: node.url)) { providers in
+            VaultDrag.urls(from: providers) { urls in
+                model.moveItems(urls, to: node.url)
+                model.dropTarget = nil
+            }
             return true
         }
     }
@@ -360,7 +446,7 @@ struct NodeRow: View {
         }
         .padding(.vertical, 1)
         .tag(node.url)
-        .draggable(node.url)
+        .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { noteMenu }
     }
 
@@ -377,6 +463,19 @@ struct NodeRow: View {
     }
 
     /// 多选时移动整批，单选时移动当前这条
+    private func dropBinding(for url: URL) -> Binding<Bool> {
+        Binding(
+            get: { model.dropTarget == url },
+            set: { targeted in
+                if targeted {
+                    model.dropTarget = url
+                } else if model.dropTarget == url {
+                    model.dropTarget = nil
+                }
+            }
+        )
+    }
+
     private var moveTargets: [URL] {
         model.sidebarSelection.contains(node.url) && model.sidebarSelection.count > 1
             ? Array(model.sidebarSelection)
@@ -482,6 +581,10 @@ struct EditorPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if !model.openTabs.isEmpty {
+                TabBar()
+                Divider()
+            }
             if model.mode != .preview, !model.isPlainTextNote {
                 FormatBar()
                 Divider()
@@ -567,7 +670,14 @@ struct EditorPane: View {
     private var content: some View {
         switch model.mode {
         case .edit:
-            MarkdownEditor(text: textBinding, fontSize: CGFloat(model.fontSize), plainText: model.isPlainTextNote)
+            MarkdownEditor(
+                text: textBinding,
+                fontSize: CGFloat(model.fontSize),
+                plainText: model.isPlainTextNote,
+                noteURL: model.selection,
+                scrollTarget: model.pendingScrollRange,
+                onScrollHandled: { model.pendingScrollRange = nil }
+            )
         case .preview:
             MarkdownPreview(
                 document: model.previewHTML,
@@ -578,7 +688,14 @@ struct EditorPane: View {
             )
         case .split:
             HSplitView {
-                MarkdownEditor(text: textBinding, fontSize: CGFloat(model.fontSize), plainText: model.isPlainTextNote)
+                MarkdownEditor(
+                text: textBinding,
+                fontSize: CGFloat(model.fontSize),
+                plainText: model.isPlainTextNote,
+                noteURL: model.selection,
+                scrollTarget: model.pendingScrollRange,
+                onScrollHandled: { model.pendingScrollRange = nil }
+            )
                     .frame(minWidth: 300)
                 MarkdownPreview(
                 document: model.previewHTML,

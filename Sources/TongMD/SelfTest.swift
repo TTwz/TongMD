@@ -247,6 +247,21 @@ enum SelfTest {
             let notFound = GitResult(code: 128, output: "", error: "remote: Repository not found.")
             check("仓库不存在有对应提示", GitEngine.friendlyMessage(for: notFound).contains("仓库不存在"))
 
+            print("文件监听")
+            let watchRoot = root.appendingPathComponent("watch")
+            try FileManager.default.createDirectory(at: watchRoot, withIntermediateDirectories: true)
+            let watcher = VaultWatcher()
+            var fired = false
+            watcher.onChange = { fired = true }
+            watcher.start(watchRoot)
+            try "x".write(to: watchRoot.appendingPathComponent("a.md"), atomically: true, encoding: .utf8)
+            let watchDeadline = Date().addingTimeInterval(4)
+            while !fired, Date() < watchDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            watcher.stop()
+            check("FSEvents 能收到文件变化", fired)
+
             print("纯文本 txt")
             let txtRoot = root.appendingPathComponent("txt-vault")
             try FileManager.default.createDirectory(at: txtRoot, withIntermediateDirectories: true)
@@ -297,6 +312,16 @@ enum SelfTest {
             check("批量移动后两个文件都在目标目录",
                   FileManager.default.fileExists(atPath: selectedFolder.appendingPathComponent("a.md").path)
                   && FileManager.default.fileExists(atPath: selectedFolder.appendingPathComponent("b.md").path))
+
+            print("搜索定位与附件")
+            check("中文命中位置", AppModel.firstMatchRange(of: "同步", in: "本地同步设计")?.location == 2)
+            check("大小写不敏感", AppModel.firstMatchRange(of: "GIT", in: "用 git 同步")?.location == 2)
+            check("找不到返回 nil", AppModel.firstMatchRange(of: "不存在", in: "abc") == nil)
+            check("附件名清洗", MarkdownTextView.sanitizeAttachmentName("截屏 2026/10/23.png") == "截屏-2026-10-23-png")
+            check("附件名不留空", MarkdownTextView.sanitizeAttachmentName("///") == "image")
+            var bigStats = AttachmentStats()
+            bigStats.bytes = 120 * 1024 * 1024
+            check("超过 100MB 触发提示", bigStats.isLarge)
 
             print("Git")
             let git = GitEngine(token: "")

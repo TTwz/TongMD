@@ -122,3 +122,17 @@ struct VaultNode: Identifiable, Hashable, Sendable {
         }
     }
 }
+
+
+/// 附件统计（非 md/txt 文件）
+struct AttachmentStats: Sendable, Equatable {
+    var count = 0
+    var bytes: Int64 = 0
+    var largestName = ""
+    var largestBytes: Int64 = 0
+
+    var isLarge: Bool { bytes > 100 * 1024 * 1024 || largestBytes > 10 * 1024 * 1024 }
+
+    var formattedTotal: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    var formattedLargest: String { ByteCountFormatter.string(fromByteCount: largestBytes, countStyle: .file) }
+}

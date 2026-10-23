@@ -63,6 +63,8 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var notes: [Note] = []
     @Published private(set) var tree: [VaultNode] = []
+    @Published private(set) var attachmentStats = AttachmentStats()
+    @Published var openTabs: [URL] = []
     /// 侧栏里的多选（文件或文件夹）。单选文件时同步打开它。
     @Published var sidebarSelection: Set<URL> = [] {
         didSet {
@@ -73,6 +75,9 @@ final class AppModel: ObservableObject {
                 collapsedFolders.remove(url)
             } else if url != selection {
                 selection = url
+            }
+            if !isDirectory, !openTabs.contains(url) {
+                openTabs.append(url)
             }
         }
     }
@@ -98,6 +103,9 @@ final class AppModel: ObservableObject {
     @Published var searchFocusToken = 0
     /// 点了不存在的双链，等用户确认是否新建
     @Published var pendingWikiLink: String?
+    /// 从搜索结果跳进笔记后，要滚动并选中的位置
+    @Published var pendingScrollRange: NSRange?
+    @Published var dropTarget: URL?
     @Published var showNewFolderPrompt = false
     @Published var newFolderName = "新建文件夹"
     @Published var newFolderDestination = "笔记库根目录"
@@ -137,6 +145,7 @@ final class AppModel: ObservableObject {
     /// 双链跳转的历史，供 ⌘[ 返回
     private var navigationHistory: [URL] = []
     private var newFolderParent: URL?
+    private let watcher = VaultWatcher()
     /// --vault 传进来的临时路径，不写进偏好设置，免得下次启动还停在演示库
     private var transientVault = false
 
@@ -194,6 +203,7 @@ final class AppModel: ObservableObject {
             reloadNotes()
             selection = notes.first?.url
             refreshBranch()
+            startWatching()
         }
     }
 
@@ -204,6 +214,20 @@ final class AppModel: ObservableObject {
         reloadNotes()
         selection = notes.first?.url
         refreshBranch()
+        startWatching()
+    }
+
+    private func startWatching() {
+        guard let vault = vaultURL else {
+            watcher.stop()
+            return
+        }
+        watcher.onChange = { [weak self] in
+            guard let self else { return }
+            self.reloadNotes()
+            self.refreshFromDiskIfNeeded()
+        }
+        watcher.start(vault)
     }
 
     func pickVaultFolder() {
@@ -235,6 +259,8 @@ final class AppModel: ObservableObject {
             selection = nil
         }
         sidebarSelection = sidebarSelection.filter { FileManager.default.fileExists(atPath: $0.path) }
+        openTabs = openTabs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        refreshAttachmentStats()
         updateBacklinks()
         updatePendingChanges()
         if isSearchActive { scheduleSearch() }
@@ -344,6 +370,24 @@ final class AppModel: ObservableObject {
     func openNote(_ url: URL) {
         sidebarSelection = [url]
         if selection != url { selection = url }
+    }
+
+    /// 从搜索结果跳转：打开后滚动到第一处命中
+    func openSearchResult(_ note: Note) {
+        openNote(note.url)
+        if let range = Self.firstMatchRange(of: searchText.trimmed, in: text) {
+            pendingScrollRange = range
+        }
+    }
+
+    nonisolated static func firstMatchRange(of keyword: String, in text: String) -> NSRange? {
+        guard !keyword.isEmpty else { return nil }
+        guard let range = text.range(of: keyword, options: [.caseInsensitive, .diacriticInsensitive]) else {
+            return nil
+        }
+        let location = text.distance(from: text.startIndex, to: range.lowerBound)
+        let length = text.distance(from: range.lowerBound, to: range.upperBound)
+        return NSRange(location: location, length: length)
     }
 
     func revealInFinder(_ url: URL) {
@@ -710,7 +754,8 @@ final class AppModel: ObservableObject {
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
             isDirty = false
-            contentCache[url] = (Self.modificationDate(of: url), text)
+            loadedMTime = Self.modificationDate(of: url)
+            contentCache[url] = (loadedMTime, text)
             if isSearchActive { scheduleSearch() }
             scheduleAutoCommit()
         } catch {
@@ -752,6 +797,66 @@ final class AppModel: ObservableObject {
         }
         previewBody = body
         previewHTML = Markdown.document(body: body, fontSize: CGFloat(fontSize) + 1)
+    }
+
+    // MARK: - 标签页
+
+    func closeTab(_ url: URL) {
+        guard let index = openTabs.firstIndex(of: url) else { return }
+        openTabs.remove(at: index)
+        guard selection == url else { return }
+        if openTabs.isEmpty {
+            selection = nil
+            sidebarSelection = []
+        } else {
+            openNote(openTabs[min(index, openTabs.count - 1)])
+        }
+    }
+
+    func closeActiveTab() {
+        if let selection { closeTab(selection) }
+    }
+
+    // MARK: - 附件体积
+
+    private func refreshAttachmentStats() {
+        guard let root = vaultURL else {
+            attachmentStats = AttachmentStats()
+            return
+        }
+
+        var stats = AttachmentStats()
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return }
+
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if name == ".git" || name == "node_modules" { enumerator.skipDescendants(); continue }
+            let ext = url.pathExtension.lowercased()
+            if ["md", "markdown", "txt"].contains(ext) { continue }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else { continue }
+            let size = Int64(values.fileSize ?? 0)
+            stats.count += 1
+            stats.bytes += size
+            if size > stats.largestBytes {
+                stats.largestBytes = size
+                stats.largestName = relativePathString(of: url, root: root)
+            }
+        }
+        attachmentStats = stats
+    }
+
+    private func relativePathString(of url: URL, root: URL) -> String {
+        var relative = url.standardizedFileURL.path
+        let rootPath = root.standardizedFileURL.path
+        if relative.hasPrefix(rootPath) { relative = String(relative.dropFirst(rootPath.count)) }
+        if relative.hasPrefix("/") { relative = String(relative.dropFirst()) }
+        return relative
     }
 
     // MARK: - 字号

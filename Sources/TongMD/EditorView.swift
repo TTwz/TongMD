@@ -9,6 +9,11 @@ struct MarkdownEditor: NSViewRepresentable {
     var fontSize: CGFloat = 15
     /// .txt 用纯文本模式：不高亮 Markdown、不自动续列表
     var plainText: Bool = false
+    /// 当前笔记路径：粘贴图片时用来决定 assets/ 位置
+    var noteURL: URL? = nil
+    /// 从搜索结果跳进来时要滚动并选中的位置
+    var scrollTarget: NSRange? = nil
+    var onScrollHandled: () -> Void = {}
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -59,6 +64,7 @@ struct MarkdownEditor: NSViewRepresentable {
         highlighter.isPlainText = plainText
         highlighter.textView = textView
         textView.isPlainText = plainText
+        textView.attachmentDirectory = noteURL?.deletingLastPathComponent()
         textView.highlighter = highlighter
         textView.textStorage?.delegate = highlighter
         context.coordinator.highlighter = highlighter
@@ -78,6 +84,8 @@ struct MarkdownEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? NSTextView else { return }
+
+        (textView as? MarkdownTextView)?.attachmentDirectory = noteURL?.deletingLastPathComponent()
 
         // 纯文本/Markdown 模式切换
         if let highlighter = context.coordinator.highlighter,
@@ -111,6 +119,16 @@ struct MarkdownEditor: NSViewRepresentable {
         let length = (text as NSString).length
         let location = min(selected.location, length)
         textView.setSelectedRange(NSRange(location: location, length: 0))
+
+        if let target = scrollTarget {
+            let safe = NSRange(
+                location: min(target.location, max(0, length - 1)),
+                length: min(target.length, max(0, length - min(target.location, max(0, length - 1))))
+            )
+            textView.scrollRangeToVisible(safe)
+            textView.setSelectedRange(safe)
+            onScrollHandled()
+        }
     }
 
     func makeCoordinator() -> Coordinator {
