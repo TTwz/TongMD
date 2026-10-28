@@ -417,6 +417,7 @@ struct NodeRow: View {
             } label: {
                 folderLabel
             }
+            .tag(node.url)
         } else {
             noteLabel
         }
@@ -432,9 +433,15 @@ struct NodeRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 1)
-        .tag(node.url)
         .contentShape(Rectangle())
-        .onTapGesture { isExpanded.wrappedValue.toggle() }
+        .simultaneousGesture(TapGesture().onEnded {
+            let expanded = !isExpanded.wrappedValue
+            let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+            if modifiers.intersection([.command, .shift]).isEmpty {
+                model.sidebarSelection = [node.url]
+            }
+            isExpanded.wrappedValue = expanded
+        })
         .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { folderMenu }
         .background(
@@ -463,7 +470,7 @@ struct NodeRow: View {
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { model.openNote(node.url) })
         .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
-        .contextMenu { noteMenu }
+        .contextMenu { node.isImage ? AnyView(attachmentMenu) : AnyView(noteMenu) }
     }
 
     @ViewBuilder
@@ -490,6 +497,14 @@ struct NodeRow: View {
                 }
             }
         )
+    }
+
+    @ViewBuilder
+    private var attachmentMenu: some View {
+        Button("在 Finder 中显示") { model.revealInFinder(node.url) }
+        Button("重命名…") { model.beginRename(node.url) }
+        Divider()
+        Button("移到废纸篓", role: .destructive) { model.requestDeleteAttachment(node.url) }
     }
 
     private var moveTargets: [URL] {
@@ -528,9 +543,16 @@ struct NodeRow: View {
 struct DetailView: View {
     @EnvironmentObject private var model: AppModel
 
+    private var referenceCount: Int {
+        guard let pending = model.pendingAttachmentDeletion else { return 0 }
+        return model.referencingNotes(for: pending).count
+    }
+
     var body: some View {
         Group {
-            if model.vaultURL == nil {
+            if let attachment = model.selectedAttachment {
+                AttachmentPreview(url: attachment)
+            } else if model.vaultURL == nil {
                 WelcomeView()
             } else if model.selection == nil {
                 ContentUnavailableView(
@@ -543,6 +565,18 @@ struct DetailView: View {
             }
         }
         .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+        .alert(
+            "图片正被引用",
+            isPresented: Binding(
+                get: { model.pendingAttachmentDeletion != nil },
+                set: { if !$0 { model.pendingAttachmentDeletion = nil } }
+            )
+        ) {
+            Button("仍然删除", role: .destructive) { model.deleteAttachmentNow() }
+            Button("取消", role: .cancel) { model.pendingAttachmentDeletion = nil }
+        } message: {
+            Text("有 \(referenceCount) 篇笔记引用了这张图片，删除后这些引用会失效。")
+        }
         .alert(
             "没有这篇笔记",
             isPresented: Binding(

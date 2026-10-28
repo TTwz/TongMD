@@ -10,7 +10,14 @@ final class MarkdownTextView: NSTextView {
     /// 当前笔记所在目录：粘贴进来的图片会存到它的 assets/ 下
     var attachmentDirectory: URL?
 
-    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
+    // 纯文本 NSTextView 默认不接受图片，系统会在调用 paste: 前禁用菜单和 ⌘V。
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + ImageClipboard.imageTypes + [.fileURL]
+    }
+
+    func canPasteImage(from pasteboard: NSPasteboard) -> Bool {
+        isEditable && attachmentDirectory != nil && ImageClipboard.containsImage(in: pasteboard)
+    }
 
     override func paste(_ sender: Any?) {
         if insertPastedImage(from: .general) { return }
@@ -20,13 +27,9 @@ final class MarkdownTextView: NSTextView {
     /// 返回 true 表示这次粘贴已经被当作图片处理掉了
     @discardableResult
     func insertPastedImage(from pasteboard: NSPasteboard) -> Bool {
-        guard let directory = attachmentDirectory else { return false }
+        guard canPasteImage(from: pasteboard), let directory = attachmentDirectory else { return false }
 
-        if let urls = pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL],
-           let imageURL = urls.first(where: { Self.imageExtensions.contains($0.pathExtension.lowercased()) }),
+        if let imageURL = ImageClipboard.imageFileURL(from: pasteboard),
            let data = try? Data(contentsOf: imageURL) {
             return insertImage(
                 data,
@@ -167,6 +170,9 @@ final class MarkdownTextView: NSTextView {
     // MARK: - 撤销支持
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
-        super.validateUserInterfaceItem(item)
+        if item.action == #selector(NSText.paste(_:)), canPasteImage(from: .general) {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
     }
 }

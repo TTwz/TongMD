@@ -6,6 +6,7 @@ import Foundation
 /// 用法：`build/TongMD.app/Contents/MacOS/TongMD --self-test`（工作目录任意）
 enum SelfTest {
 
+    @MainActor
     static func run() -> Int32 {
         var failures: [String] = []
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -225,6 +226,23 @@ enum SelfTest {
             check("代理参数进入网络参数", GitEngine.networkArguments(token: "").contains("http.version=HTTP/1.1"))
             check("始终禁用外部凭据助手", GitEngine.networkArguments(token: "").contains("credential.helper="))
 
+            print("附件可见")
+            let visVault = root.appendingPathComponent("vis-vault")
+            let visAssets = visVault.appendingPathComponent("assets")
+            try FileManager.default.createDirectory(at: visAssets, withIntermediateDirectories: true)
+            try "笔记".write(to: visVault.appendingPathComponent("note.md"), atomically: true, encoding: .utf8)
+            try "png".write(to: visAssets.appendingPathComponent("pic.png"), atomically: true, encoding: .utf8)
+
+            let visTree = AppModel.buildTree(at: visVault, root: visVault)
+            check("assets 目录在侧栏可见", visTree.contains { $0.isDirectory && $0.name == "assets" })
+            let assetsNode = visTree.first { $0.name == "assets" }
+            check("图片出现在树里", assetsNode?.children?.contains { $0.name == "pic.png" } == true)
+            check("图片识别为附件", AppModel.isImageFile(visAssets.appendingPathComponent("pic.png")))
+            check("附件图标是 photo", assetsNode?.children?.first?.iconName == "photo")
+            check("笔记列表不含图片", AppModel.flatten(visTree).filter { $0.isNote }
+                .allSatisfy { $0.name != "pic.png" })
+            check("md 不会被当成图片", !AppModel.isImageFile(visVault.appendingPathComponent("note.md")))
+
             print("Token 存储")
             TokenStore.directoryOverride = root.appendingPathComponent("token-store")
             check("Token 可写入", TokenStore.save("github_pat_selftest"))
@@ -303,6 +321,8 @@ enum SelfTest {
             let pastedFiles = (try? FileManager.default.contentsOfDirectory(atPath: pasteDir.appendingPathComponent("assets").path)) ?? []
             check("图片写进了 assets/", pastedFiles.contains { $0.hasSuffix(".png") })
             check("插入了 Markdown 引用", pasteView.string.contains("(assets/") && pasteView.string.contains("!["))
+
+            try ClipboardSelfTest.run(in: root, check: check)
 
             print("列表稳定性")
             let stableRoot = root.appendingPathComponent("stable")

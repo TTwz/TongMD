@@ -66,6 +66,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var tree: [VaultNode] = []
     @Published private(set) var attachmentStats = AttachmentStats()
     @Published var openTabs: [URL] = []
+    /// 选中图片附件时，详情区显示预览而不是编辑器
+    @Published var selectedAttachment: URL?
+    @Published var pendingAttachmentDeletion: URL?
     /// 侧栏里的多选（文件或文件夹）。单选文件时同步打开它。
     @Published var sidebarSelection: Set<URL> = [] {
         didSet {
@@ -74,10 +77,13 @@ final class AppModel: ObservableObject {
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDirectory {
                 collapsedFolders.remove(url)
+            } else if Self.isImageFile(url) {
+                selectedAttachment = url
             } else if url != selection {
                 selection = url
+                selectedAttachment = nil
             }
-            if !isDirectory, !openTabs.contains(url) {
+            if !isDirectory, !Self.isImageFile(url), !openTabs.contains(url) {
                 openTabs.append(url)
             }
         }
@@ -150,7 +156,7 @@ final class AppModel: ObservableObject {
     private var lastAttachmentScanAt = Date.distantPast
     private var lastPendingScanAt = Date.distantPast
     private let watcher = VaultWatcher()
-    private var pasteMonitor: Any?
+    private var clipboardMonitor: Any?
     /// --vault 传进来的临时路径，不写进偏好设置，免得下次启动还停在演示库
     private var transientVault = false
 
@@ -181,28 +187,30 @@ final class AppModel: ObservableObject {
 
     // MARK: - 生命周期
 
-    init() {
+    init(temporaryVault: URL? = nil) {
         repoURLString = defaults.string(forKey: Keys.repo) ?? ""
         autoCommit = defaults.object(forKey: Keys.autoCommit) as? Bool ?? true
         mode = EditorMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .split
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 15
         token = TokenStore.load()
 
-        // 调试/脚本入口：TongMD --vault /path/to/notes
-        if let index = CommandLine.arguments.firstIndex(of: "--vault"),
-           CommandLine.arguments.count > index + 1 {
-            let path = CommandLine.arguments[index + 1]
-            if FileManager.default.fileExists(atPath: path) {
-                transientVault = true
-                vaultPath = path
-                reloadNotes()
-                selection = notes.first?.url
-                refreshBranch()
-                return
-            }
-        }
+        installClipboardShortcuts()
 
-        installPasteFallback()
+        // 调试/脚本入口：TongMD --vault /path/to/notes
+        var launchVault = temporaryVault
+        if launchVault == nil, let index = CommandLine.arguments.firstIndex(of: "--vault"),
+           CommandLine.arguments.count > index + 1 {
+            launchVault = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        }
+        if let launchVault, FileManager.default.fileExists(atPath: launchVault.path) {
+            transientVault = true
+            vaultPath = launchVault.path
+            reloadNotes()
+            selection = notes.first?.url
+            refreshBranch()
+            startWatching()
+            return
+        }
 
         if let path = defaults.string(forKey: Keys.vault),
            FileManager.default.fileExists(atPath: path) {
@@ -212,6 +220,10 @@ final class AppModel: ObservableObject {
             refreshBranch()
             startWatching()
         }
+    }
+
+    deinit {
+        if let clipboardMonitor { NSEvent.removeMonitor(clipboardMonitor) }
     }
 
     // MARK: - 笔记库
@@ -266,7 +278,7 @@ final class AppModel: ObservableObject {
 
         let newTree = Self.buildTree(at: root, root: root)
         let newNotes = Self.flatten(newTree)
-            .filter { !$0.isDirectory }
+            .filter { $0.isNote }
             .map { Note(url: $0.url, root: root) }
 
         // 关键：内容保存不会改变树结构，这里比较后再赋值，避免 SwiftUI 白白重建行
@@ -304,8 +316,7 @@ final class AppModel: ObservableObject {
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             let name = url.lastPathComponent
             if isDirectory {
-                // assets 是附件目录，不在侧栏里当成笔记文件夹展示
-                if name == ".git" || name == "node_modules" || name == ".obsidian" || name == "assets" { continue }
+                if name == ".git" || name == "node_modules" || name == ".obsidian" { continue }
                 nodes.append(VaultNode(
                     url: url,
                     name: name,
@@ -315,7 +326,7 @@ final class AppModel: ObservableObject {
                 ))
             } else {
                 let ext = url.pathExtension.lowercased()
-                guard ext == "md" || ext == "markdown" || ext == "txt" else { continue }
+                guard VaultNode.noteExtensions.contains(ext) || VaultNode.imageExtensions.contains(ext) else { continue }
                 nodes.append(VaultNode(
                     url: url,
                     name: name,
@@ -394,7 +405,35 @@ final class AppModel: ObservableObject {
 
     func openNote(_ url: URL) {
         sidebarSelection = [url]
+        selectedAttachment = nil
         if selection != url { selection = url }
+    }
+
+    nonisolated static func isImageFile(_ url: URL) -> Bool {
+        VaultNode.imageExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// 哪些笔记引用了这个附件（按文件名匹配相对路径）
+    func referencingNotes(for attachment: URL) -> [Note] {
+        let name = attachment.lastPathComponent
+        return notes.filter { note in
+            guard let content = contentCache[note.url]?.text else { return false }
+            return content.contains(name)
+        }
+    }
+
+    func requestDeleteAttachment(_ url: URL) {
+        if referencingNotes(for: url).isEmpty {
+            trashItem(url)
+        } else {
+            pendingAttachmentDeletion = url
+        }
+    }
+
+    func deleteAttachmentNow() {
+        guard let url = pendingAttachmentDeletion else { return }
+        pendingAttachmentDeletion = nil
+        trashItem(url)
     }
 
     /// 从搜索结果跳转：打开后滚动到第一处命中
@@ -504,17 +543,16 @@ final class AppModel: ObservableObject {
     // MARK: - 侧栏文件复制 / 粘贴
 
     /// ⌘C：把侧栏选中的文件写进剪贴板（Finder 也能接）
-    func copySidebarSelection() -> Bool {
+    func copySidebarSelection(to pasteboard: NSPasteboard = .general) -> Bool {
         let urls = Array(sidebarSelection)
         guard !urls.isEmpty else { return false }
-        let pasteboard = NSPasteboard.general
+        flushPendingSave()
         pasteboard.clearContents()
         return pasteboard.writeObjects(urls as [NSURL])
     }
 
     /// ⌘V：把剪贴板里的文件复制到目标目录（选中的文件夹，或当前笔记所在目录）
-    func pasteFilesFromPasteboard() -> Bool {
-        let pasteboard = NSPasteboard.general
+    func pasteFilesFromPasteboard(_ pasteboard: NSPasteboard = .general) -> Bool {
         guard let urls = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
@@ -605,6 +643,7 @@ final class AppModel: ObservableObject {
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             contentCache.removeValue(forKey: url)
+            if selectedAttachment == url { selectedAttachment = nil }
             if let current = selection,
                current.path == url.path || current.path.hasPrefix(url.path + "/") {
                 selection = nil
@@ -872,37 +911,35 @@ final class AppModel: ObservableObject {
         previewHTML = Markdown.document(body: body, fontSize: CGFloat(fontSize) + 1)
     }
 
-    /// ⌘V 的兜底，只在一种情况下介入：
-    /// 剪贴板里是**图片数据**、焦点又不在任何文本视图上（例如点在了编辑区空白处）。
-    /// 其它情况一律还给系统，避免抢掉侧栏的文件复制/粘贴和普通文本粘贴。
-    private func installPasteFallback() {
-        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard flags == .command else { return event }
-            guard event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
-            guard let window = NSApp.keyWindow else { return event }
-
-            // 输入框/编辑器自己处理
-            if window.firstResponder is NSTextView { return event }
-
-            let pasteboard = NSPasteboard.general
-            let key = event.charactersIgnoringModifiers?.lowercased()
-
-            // 侧栏文件复制/粘贴：只在没有文本框聚焦时生效
-            if key == "c", self.copySidebarSelection() { return nil }
-            if key == "v", self.pasteFilesFromPasteboard() { return nil }
-
-            // 剪贴板里是文件但没粘贴成功 → 不劫持，交回系统
-            if pasteboard.types?.contains(.fileURL) == true { return event }
-
-            // 只有图片数据才接管
-            guard ImageClipboard.pngData(from: pasteboard) != nil else { return event }
-
-            guard let editor = Self.findEditor(in: window.contentView) else { return event }
-            if editor.insertPastedImage(from: pasteboard) { return nil }
-            return event
+    /// 先按焦点分发快捷键，图片直接进入编辑器，侧栏负责文件复制/粘贴。
+    private func installClipboardShortcuts() {
+        clipboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = NSApp.keyWindow else { return event }
+            return self.handleClipboardShortcut(event, in: window) ? nil : event
         }
+    }
+
+    /// 返回 true 表示已处理；普通文本操作继续交给系统响应链。
+    func handleClipboardShortcut(_ event: NSEvent, in window: NSWindow,
+                                 pasteboard: NSPasteboard = .general) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard flags == .command,
+              let key = event.charactersIgnoringModifiers?.lowercased(),
+              key == "c" || key == "v" else { return false }
+
+        if let editor = window.firstResponder as? MarkdownTextView {
+            return key == "v" && editor.insertPastedImage(from: pasteboard)
+        }
+        // 搜索框、设置输入框和其它文本视图保持系统的复制/粘贴。
+        if window.firstResponder is NSTextView { return false }
+
+        if key == "c" { return copySidebarSelection(to: pasteboard) }
+        if pasteFilesFromPasteboard(pasteboard) { return true }
+        // Finder 文件只走文件粘贴，避免把未处理的文件误当作截图。
+        if pasteboard.types?.contains(.fileURL) == true { return false }
+        guard ImageClipboard.containsImage(in: pasteboard),
+              let editor = Self.findEditor(in: window.contentView) else { return false }
+        return editor.insertPastedImage(from: pasteboard)
     }
 
     private static func findEditor(in view: NSView?) -> MarkdownTextView? {

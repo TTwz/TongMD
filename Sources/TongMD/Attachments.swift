@@ -41,11 +41,27 @@ enum AttachmentStore {
 
 /// 从剪贴板取图片：覆盖 macOS 截图的裸 TIFF、PNG/JPEG 以及延迟加载的图片
 enum ImageClipboard {
+    static let imageTypes: [NSPasteboard.PasteboardType] = [
+        .png, .tiff, .init("public.jpeg"), .init("public.heic")
+    ] + NSImage.imageTypes.map { NSPasteboard.PasteboardType($0) }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]
+
+    static func imageFileURL(from pasteboard: NSPasteboard) -> URL? {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        return urls?.first { imageExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    /// 菜单校验只看类型，不在每次刷新菜单时解码整张截图。
+    static func containsImage(in pasteboard: NSPasteboard) -> Bool {
+        pasteboard.availableType(from: imageTypes) != nil || imageFileURL(from: pasteboard) != nil
+    }
+
     static func pngData(from pasteboard: NSPasteboard = .general) -> Data? {
-        let types: [NSPasteboard.PasteboardType] = [
-            .png, .tiff, .init("public.jpeg"), .init("public.heic")
-        ]
-        for type in types {
+        for type in imageTypes {
             if let data = pasteboard.data(forType: type),
                let rep = NSBitmapImageRep(data: data),
                let png = rep.representation(using: .png, properties: [:]) {

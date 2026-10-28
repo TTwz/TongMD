@@ -113,8 +113,20 @@ struct VaultNode: Identifiable, Hashable, Sendable {
         isDirectory ? name : (url.pathExtension.isEmpty ? name : url.deletingPathExtension().lastPathComponent)
     }
 
+    static let noteExtensions: Set<String> = ["md", "markdown", "txt"]
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "svg"]
+
+    var isNote: Bool {
+        !isDirectory && Self.noteExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isImage: Bool {
+        !isDirectory && Self.imageExtensions.contains(url.pathExtension.lowercased())
+    }
+
     var iconName: String {
         guard !isDirectory else { return "folder" }
+        if isImage { return "photo" }
         switch url.pathExtension.lowercased() {
         case "txt": return "doc.plaintext"
         case "md", "markdown": return "doc.richtext"
