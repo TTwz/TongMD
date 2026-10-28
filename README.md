@@ -1,8 +1,20 @@
 # TongMD
 
-macOS 上的 Markdown 笔记 App：笔记就是文件夹里的 `.md` 文件，GitHub 当远端和版本库。没有云服务、没有私有数据库，换台电脑 `git clone` 就能接着写。
+macOS 上的 Markdown 笔记 App：笔记就是文件夹里的 `.md` / `.txt` 文件，GitHub 当远端和版本库。没有云服务、没有私有数据库，换台电脑 `git clone` 就能接着写。
 
-当前是可用的骨架（M1 + M2 + 编辑体验）：本地写作、带语法高亮的编辑器、全文搜索、双链、文件夹、实时预览、git 同步、冲突保护。刻意没做的部分见文末「已知限制」。
+> **这是一个个人自用项目。** 功能按我自己的写作习惯长出来，不为通用场景、团队协作或长期兼容性设计：接口和文件格式可能随时改，**不提供支持，也不承诺 issue / PR 会被处理**。觉得好用可以直接用或 fork，但请预期它随时会变；升级前先 `git commit` 一下比较稳妥。
+
+当前版本 **0.9.0**（2026-10-28）。逐版本的变化见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 现在能做什么
+
+- **编辑器**：Markdown 语法高亮、格式条与快捷键、`[[` 双链补全、模板、字号 11–24pt
+- **搜索**：SQLite FTS5 中文索引，支持 `tag:` / `folder:` / `before:` / `after:` 操作符
+- **链接**：重命名或移动时自动改写引用，断链检查
+- **组织**：目录树、多选拖拽、标签页、大纲、标签栏、每日笔记、快速记录
+- **附件**：统一存到笔记库根目录 `assets/`，可预览、可一键整理迁移
+- **Git**：本地优先，手动/自动同步、冲突面板、版本历史、导出 HTML / PDF
+- **纯文本**：`.txt` 按原文编辑与预览，不做 Markdown 解析
 
 ![界面截图](docs/screenshot.png)
 
@@ -214,17 +226,15 @@ Token 会在使用前校验格式（必须以 `ghp_` / `github_pat_` 等开头�
 - `⌘[` 返回上一篇。
 - 底部显示「被 N 篇引用」，点引用方的标题直接过去。
 
-## 结构
-
 ## 同步语义（有意设计成不对称）
 
 | 动作 | 何时发生 |
 | --- | --- |
 | 写盘 | 输入停止 600ms 后 debounce 保存；失焦、退出、切换笔记时强制保存 |
-| `git commit` | 保存后再等 3s；可在设置里关掉 |
-| `git pull --rebase` + `git push` | 只有手动 ⇧⌘S |
+| `git commit` | 保存后再等 3 秒；可在设置里关掉 |
+| `git pull --rebase` + `git push` | 默认手动 ⇧⌘S；打开设置里的「自动同步」后，保存 8 秒后自动执行 |
 
-只自动提交、不自动推送，是为了避免写两句话就在 GitHub 上多一条提交记录，也避免网络抖动时把界面卡住。
+默认只自动提交、不自动推送，是为了避免写两句话就在 GitHub 上多一条提交记录，也避免网络抖动时把界面卡住。打开「自动同步」后失败只更新状态栏，不弹窗；没配 origin 或没填 Token 时会自动跳过。
 
 **代理**：git 不会使用 macOS 的「系统代理」，只认环境变量和 git config。App 启动网络操作时会用 `CFNetworkCopySystemProxySettings` 读出系统代理，显式传给 git（支持 HTTP/HTTPS/SOCKS）；设置页的「同步状态」里会显示当前是「系统代理 127.0.0.1:7897」还是「直连」。如果代理软件的规则把 `github.com` 分流到直连，仍然会超时，需要在代理里给它加规则。
 
@@ -242,23 +252,40 @@ git 的原始报错会被翻译成能直接行动的中文：`Authentication fai
 
 ```
 Sources/TongMD/
-  TongMDApp.swift   入口、菜单命令
-  RootView.swift    三栏界面、状态栏
-  EditorView.swift  NSScrollView + NSTextView 编辑器、WKWebView 预览
-  FormatBar.swift   编辑区上方的格式条（走响应者链调动作）
-  MarkdownCheatSheet.swift  语法速查面板
-  AppModel.swift    状态中枢：扫描、读写、debounce、同步编排
-  Git.swift         进程调用系统 git（clone/pull/commit/push）
-  Markdown.swift    轻量 Markdown → HTML，本地图片内联成 data URI
-  Keychain.swift    PAT 存取
+  TongMDApp.swift        入口、菜单命令
+  RootView.swift         三栏界面、侧栏树、状态栏
+  EditorView.swift       NSTextView 编辑器 + WKWebView 预览
+  FormatBar.swift        格式条
+  TabBar.swift           标签页
+  MarkdownCheatSheet.swift  语法速查
+  AppModel.swift         状态中枢：扫描、读写、debounce、同步编排
+  Git.swift              驱动系统 git（clone/pull/commit/push/冲突回退）
+  VaultWatcher.swift     FSEvents 文件监听
+  TokenStore.swift       Token 存取（0600 配置文件）
+  Attachments.swift      附件落盘与剪贴板图片读取
+  AttachmentPreview.swift 附件预览 / 删除
+  Markdown.swift         Markdown → HTML（表格、任务清单、脚注、代码高亮）
+  Models.swift           数据模型
+  Outline.swift / OutlineView.swift        标题大纲
+  QuickSwitcherView.swift  ⌘P 快速切换
+  QuickCaptureView.swift   快速记录窗口
+  Templates.swift        模板与占位符
+  ConflictView.swift     同步冲突面板
+  HistoryView.swift      git 版本历史
+  BrokenLinksView.swift  断链检查
+  Export.swift           HTML / PDF 导出
   Search/
-    SearchEngine.swift  内存全文检索（多关键词 AND、片段、排序）
-    WikiLinks.swift     [[双链]] 解析与反向引用判定
-  Editor/
-    MarkdownTextView.swift          编辑器子类：拦截回车、暴露格式化动作
-    MarkdownSyntaxHighlighter.swift 按行/按段着色，记号压暗
-    TextActions.swift               包裹、行前缀、智能续行的实现
-  SelfTest.swift    开发期自检（DEBUG）
+    SearchIndex.swift    SQLite FTS5 索引与中文切词
+    SearchQuery.swift    搜索语法（tag:/folder:/before:/after:）
+    SearchEngine.swift   内存扫描兜底与片段
+    FuzzyMatch.swift     标题模糊匹配
+    TagParser.swift      #标签 解析
+    WikiLinks.swift      [[双链]] 解析与反向引用
+  Links/
+    LinkCompletion.swift        [[ 补全判断
+    LinkCompletionPanel.swift   补全面板
+    LinkRewriter.swift          重命名/移动时改写引用
+  SelfTest.swift         自检（DEBUG）
 ```
 
 ## 自检
@@ -294,19 +321,19 @@ open -n build/TongMD.app --args --vault "$PWD/.demo-vault"
 
 ## 已知限制
 
-- 没有斜杠命令（`/h1` 那种）、没有自动补全，格式还是靠快捷键和按钮。
-- 双链没有输入 `[[` 时的自动补全，得自己记文件名（或从预览里点过去）。
-- 排序固定为「目录在前、按名称」，不能手动排。
-- 只有单窗口 + 标签页，没有多窗口（同一份 AppModel，多窗口会互相干扰）。
-- 附件（图片）直接进 git，仓库会随图片增长；大图会拖慢 clone。
-- 外部改动靠「切回 App 时比对 mtime」发现，不是 FSEvents 实时监听。
-- 只做了 ad-hoc 签名，没有 Developer ID 公证；换机器传来时会被 Gatekeeper 拦一次（见上面的 `xattr` 命令）。
-- Token 以 0600 权限的明文文件存在本机，不再进钥匙串（原因见上面「Token 怎么拿」）。
+- **个人自用**：不保证接口与文件格式稳定，也不承诺兼容旧库或旧配置。
+- 没有斜杠命令（`/h1` 那种），格式靠快捷键和格式条。
+- 排序固定「目录在前、按名称」，不能手动排；没有多窗口，只有单窗口 + 标签页。
+- 附件直接进 git，仓库会随图片增长；没有自动压缩，也没接 Git LFS。
+- 搜索索引是本地缓存（`~/Library/Application Support/TongMD/search.sqlite3`），删掉会自动重建，不参与 git。
+- 只做了 ad-hoc 签名、没有公证；跨机器分发会被 Gatekeeper 拦一次。
+- Token 以 0600 明文文件存在本机（不进钥匙串），同用户的其它进程理论上可读。
+- 同步依赖系统 git 和你的网络环境；代理与 HTTP/2 做了兼容，但企业网关仍可能挡住。
 
 ## 下一步优先级建议
 
-1. 侧栏多选 + 批量移动、拖拽时高亮目标目录
-2. FSEvents 监听 + 多窗口/标签页
-3. 附件引用检查（删除时提示哪些笔记会受影响）
-4. 菜单栏速记（全局快捷键 → 追加到当天日记）
-5. 搜索结果高亮定位（跳到笔记后滚动到命中处）
+1. 多窗口支持（每个窗口独立状态）
+2. 附件压缩与体积配额，必要时接 Git LFS
+3. 同步的可观测性：更细的错误分类与重试策略
+4. 更完整的 Markdown（定义列表、数学公式）
+5. 移动端只读查看（长期，不一定做）
