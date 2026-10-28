@@ -153,3 +153,55 @@ struct AttachmentStats: Sendable, Equatable {
 extension Notification.Name {
     static let tongmdPasteFailed = Notification.Name("dev.tong.TongMD.pasteFailed")
 }
+
+
+struct BrokenLink: Identifiable {
+    let id = UUID()
+    let note: Note
+    let target: String
+    let isWiki: Bool
+}
+
+
+struct Backlink: Identifiable {
+    let id = UUID()
+    let note: Note
+    /// 引用所在的那一行（用于展示上下文）
+    let excerpt: String
+    /// 该行在笔记里的字符偏移，点击后跳过去
+    let offset: Int
+}
+
+
+struct TagCount: Identifiable, Equatable {
+    var id: String { name }
+    let name: String
+    let count: Int
+}
+
+
+struct FileVersion: Identifiable, Equatable {
+    let id: String
+    let date: Date
+    let message: String
+
+    var shortHash: String { String(id.prefix(7)) }
+}
+
+
+struct ConflictFile: Identifiable, Equatable {
+    var id: String { path }
+    let path: String
+    let localText: String
+    let remoteText: String
+    var resolved: Bool = false
+    /// nil 表示保留本地、不写文件
+    var finalText: String?
+}
+
+
+struct VisibleNode: Identifiable {
+    var id: URL { node.url }
+    let node: VaultNode
+    let depth: Int
+}

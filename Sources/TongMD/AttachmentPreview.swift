@@ -31,9 +31,54 @@ struct AttachmentPreview: View {
             .background(Color(nsColor: .textBackgroundColor))
 
             Divider()
+            referencesBar
+            Divider()
             footer
         }
         .navigationTitle(url.lastPathComponent)
+    }
+
+    /// 被哪些笔记引用，点名字直接跳过去
+    private var referencesBar: some View {
+        HStack(spacing: 6) {
+            if references.isEmpty {
+                Image(systemName: "circle.dashed")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text("没有被任何笔记引用")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Image(systemName: "link")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Text("引用：")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                ForEach(references.prefix(3)) { note in
+                    Button(note.title) { model.openNote(note.url) }
+                        .buttonStyle(.link)
+                        .font(.caption2)
+                        .lineLimit(1)
+                }
+
+                if references.count > 3 {
+                    Menu("还有 \(references.count - 3) 篇") {
+                        ForEach(Array(references.dropFirst(3))) { note in
+                            Button(note.title) { model.openNote(note.url) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .font(.caption2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     private var footer: some View {
@@ -52,12 +97,6 @@ struct AttachmentPreview: View {
             }
 
             Spacer(minLength: 8)
-
-            if !references.isEmpty {
-                Text("被 \(references.count) 篇笔记引用")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             Button("在 Finder 中显示") { model.revealInFinder(url) }
                 .controlSize(.small)

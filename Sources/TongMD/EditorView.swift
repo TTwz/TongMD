@@ -13,6 +13,9 @@ struct MarkdownEditor: NSViewRepresentable {
     var noteURL: URL? = nil
     /// 没有打开笔记时的兜底目录（笔记库根）
     var fallbackAttachmentDirectory: URL? = nil
+    var vaultURL: URL? = nil
+    /// [[ 补全候选
+    var noteTitles: [String] = []
     /// 从搜索结果跳进来时要滚动并选中的位置
     var scrollTarget: NSRange? = nil
     var onScrollHandled: () -> Void = {}
@@ -67,6 +70,13 @@ struct MarkdownEditor: NSViewRepresentable {
         highlighter.textView = textView
         textView.isPlainText = plainText
         textView.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
+        textView.attachmentRoot = vaultURL
+        textView.noteTitles = noteTitles
+        // 关掉系统的行内预测/单词补全，避免和 [[ 补全浮层抢同一块区域
+        if #available(macOS 14.0, *) {
+            textView.isAutomaticTextCompletionEnabled = false
+        }
+        textView.isAutomaticSpellingCorrectionEnabled = false
         textView.highlighter = highlighter
         textView.textStorage?.delegate = highlighter
         context.coordinator.highlighter = highlighter
@@ -88,6 +98,8 @@ struct MarkdownEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
         (textView as? MarkdownTextView)?.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
+        (textView as? MarkdownTextView)?.attachmentRoot = vaultURL
+        (textView as? MarkdownTextView)?.noteTitles = noteTitles
 
         // 纯文本/Markdown 模式切换
         if let highlighter = context.coordinator.highlighter,
@@ -108,28 +120,35 @@ struct MarkdownEditor: NSViewRepresentable {
             highlighter.updateTypingAttributes(textView)
         }
 
-        guard textView.string != text else { return }
-        // 正在用输入法组字、或者有未提交的输入时，绝不能整段替换缓冲区
-        guard !textView.hasMarkedText() else { return }
+        // 外部改动（切换笔记、外部编辑）才整段替换
+        if textView.string != text {
+            // 正在用输入法组字、或者有未提交的输入时，绝不能整段替换缓冲区
+            guard !textView.hasMarkedText() else { return }
 
-        // 只会在外部改动（切换笔记、外部编辑）时触发，保留光标位置
-        let selected = textView.selectedRange()
-        textView.string = text
-        if let storage = textView.textStorage {
-            context.coordinator.highlighter?.highlightAll(storage, caret: selected.location)
+            // 保留光标位置
+            let selected = textView.selectedRange()
+            textView.string = text
+            if let storage = textView.textStorage {
+                context.coordinator.highlighter?.highlightAll(storage, caret: selected.location)
+            }
+            let length = (text as NSString).length
+            let location = min(selected.location, length)
+            textView.setSelectedRange(NSRange(location: location, length: 0))
         }
-        let length = (text as NSString).length
-        let location = min(selected.location, length)
-        textView.setSelectedRange(NSRange(location: location, length: 0))
 
+        // 跳转和内容是否变化无关：大纲、搜索命中同一篇时也要滚过去
         if let target = scrollTarget {
+            let length = (text as NSString).length
+            let location = min(target.location, max(0, length - 1))
             let safe = NSRange(
-                location: min(target.location, max(0, length - 1)),
-                length: min(target.length, max(0, length - min(target.location, max(0, length - 1))))
+                location: location,
+                length: min(target.length, max(0, length - location))
             )
-            textView.scrollRangeToVisible(safe)
-            textView.setSelectedRange(safe)
-            onScrollHandled()
+            DispatchQueue.main.async {
+                textView.scrollRangeToVisible(safe)
+                textView.setSelectedRange(safe)
+                onScrollHandled()
+            }
         }
     }
 
@@ -154,6 +173,7 @@ struct MarkdownEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             highlighter?.updateTypingAttributes(textView)
+            (textView as? MarkdownTextView)?.linkCompletionDidMoveCaret()
         }
     }
 }
@@ -171,10 +191,16 @@ struct MarkdownPreview: NSViewRepresentable {
     var fontSize: CGFloat = 16
     /// 预览里点了 [[双链]] 时回调给 AppModel
     var onWikiLink: ((String) -> Void)? = nil
+    /// 预览里勾选任务清单时回调 (行号, 是否勾选)
+    var onToggleTask: ((Int, Bool) -> Void)? = nil
+    /// 预览里点「复制」代码块
+    var onCopyCode: ((String) -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         // 预览是只读的，不应该抢走编辑器的焦点：否则点了预览再按 ⌘V 会没有任何反应
-        let webView = NonFocusableWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: "tongmd")
+        let webView = NonFocusableWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         return webView
@@ -183,6 +209,8 @@ struct MarkdownPreview: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onWikiLink = onWikiLink
+        coordinator.onToggleTask = onToggleTask
+        coordinator.onCopyCode = onCopyCode
 
         if coordinator.loadedBody != nil, coordinator.loadedFontSize != fontSize {
             coordinator.loadedFontSize = fontSize
@@ -229,12 +257,35 @@ struct MarkdownPreview: NSViewRepresentable {
         Coordinator()
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var noteID: URL?
         var loadedBody: String?
         var loadedFontSize: CGFloat = 16
         var isReady = false
         var onWikiLink: ((String) -> Void)?
+        var onToggleTask: ((Int, Bool) -> Void)?
+        var onCopyCode: ((String) -> Void)?
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "tongmd",
+                  let body = message.body as? [String: Any],
+                  let type = body["type"] as? String else { return }
+
+            switch type {
+            case "toggleTask":
+                guard let line = body["line"] as? Int else { return }
+                onToggleTask?(line, body["checked"] as? Bool ?? false)
+            case "copyCode":
+                if let text = body["text"] as? String {
+                    onCopyCode?(text)
+                }
+            default:
+                break
+            }
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isReady = true

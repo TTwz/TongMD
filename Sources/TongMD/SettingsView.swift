@@ -105,10 +105,29 @@ struct SettingsView: View {
                     }
                     Text(model.attachmentStats.isLarge
                          ? "附件偏大，git 仓库会跟着膨胀。建议压缩图片，或把大附件放到独立仓库 / 对象存储，必要时用 Git LFS。"
-                         : "粘贴图片会自动存到当前笔记所在目录的 assets/ 下，并以相对路径引用；单个文件超过 10MB 或总量超过 100MB 时这里会提醒。")
+                         : "粘贴图片会统一存到笔记库根目录的 assets/ 下，并以相对路径引用；单个文件超过 10MB 或总量超过 100MB 时这里会提醒。")
                         .font(.caption)
                         .foregroundStyle(model.attachmentStats.isLarge ? .orange : .secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Divider()
+
+                    LabeledContent("搜索索引") {
+                        Text(ByteCountFormatter.string(
+                            fromByteCount: Int64(model.searchIndexBytes),
+                            countStyle: .file
+                        ))
+                        .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 8) {
+                        Button("重建") { model.rebuildSearchIndex() }
+                            .controlSize(.small)
+                        Button("压缩") { model.compactSearchIndex() }
+                            .controlSize(.small)
+                        Text("保存在 Application Support，不占笔记库")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("现有文件夹") {
@@ -119,6 +138,52 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                Section("每日笔记与模板") {
+                    LabeledContent("日记目录") {
+                        Text("daily/")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 8) {
+                        Button("打开今日笔记") { model.openDailyNote() }
+                        Button("快速记录…") { model.toggleQuickCapture() }
+                    }
+                    .controlSize(.small)
+
+                    Text("日记模板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $model.dailyTemplate)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 90)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                        )
+
+                    Text("新建笔记模板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $model.noteTemplate)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 64)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                        )
+
+                    Text("占位符：{{date}} {{time}} {{title}}")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("自动同步") {
+                    Toggle("保存后自动同步", isOn: $model.autoSync)
+                    Text("保存或本地提交后 8 秒执行一次 pull + commit + push。失败只更新状态栏、不弹窗；没有配置 origin 时自动跳过。需要先填 Token。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Section("同步状态") {

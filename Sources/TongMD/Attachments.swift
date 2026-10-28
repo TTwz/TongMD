@@ -3,13 +3,18 @@ import Foundation
 
 /// 附件落盘：统一走这里，编辑器和菜单入口共用
 enum AttachmentStore {
-    /// 返回相对路径（如 assets/截屏.png），失败返回 nil
-    static func save(data: Data, name: String, ext: String = "png", into directory: URL) -> String? {
+    /// 保存到指定目录下的 assets/，返回文件 URL
+    static func save(data: Data, name: String, ext: String = "png", into directory: URL) -> URL? {
         let assets = directory.appendingPathComponent("assets", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
         } catch {
             return nil
+        }
+
+        // 内容去重：同一张图已经在 assets/ 里就直接复用，不再复制一份
+        if let existing = existingFile(matching: data, ext: ext, in: assets) {
+            return existing
         }
 
         let safeName = sanitize(name)
@@ -25,7 +30,38 @@ enum AttachmentStore {
         } catch {
             return nil
         }
-        return "assets/\(fileURL.lastPathComponent)"
+        return fileURL
+    }
+
+    /// 在 assets/ 里找内容完全相同的文件（先比大小，再比字节）
+    static func existingFile(matching data: Data, ext: String, in assets: URL) -> URL? {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: assets,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for file in files where file.pathExtension.lowercased() == ext.lowercased() {
+            guard let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  size == data.count else { continue }
+            if (try? Data(contentsOf: file)) == data {
+                return file
+            }
+        }
+        return nil
+    }
+
+    /// 从 directory 到 file 的相对路径，例如 ../../assets/x.png
+    static func relativePath(from directory: URL, to file: URL) -> String {
+        let from = directory.standardizedFileURL.pathComponents
+        let to = file.standardizedFileURL.pathComponents
+        var index = 0
+        while index < min(from.count, to.count), from[index] == to[index] {
+            index += 1
+        }
+        let ups = Array(repeating: "..", count: from.count - index)
+        let downs = Array(to[index...])
+        return (ups + downs).joined(separator: "/")
     }
 
     static func sanitize(_ name: String) -> String {

@@ -9,6 +9,9 @@ final class AppModel: ObservableObject {
         static let repo = "repoURL"
         static let vault = "vaultPath"
         static let autoCommit = "autoCommit"
+        static let autoSync = "autoSync"
+        static let dailyTemplate = "dailyTemplate"
+        static let noteTemplate = "noteTemplate"
         static let mode = "editorMode"
         static let fontSize = "editorFontSize"
     }
@@ -38,6 +41,18 @@ final class AppModel: ObservableObject {
     @Published var autoCommit: Bool = true {
         didSet { defaults.set(autoCommit, forKey: Keys.autoCommit) }
     }
+    /// 保存/本地提交后自动 pull + push
+    @Published var autoSync: Bool = true {
+        didSet { defaults.set(autoSync, forKey: Keys.autoSync) }
+    }
+    @Published var dailyTemplate: String = Templates.defaultDaily {
+        didSet { defaults.set(dailyTemplate, forKey: Keys.dailyTemplate) }
+    }
+    @Published var noteTemplate: String = "" {
+        didSet { defaults.set(noteTemplate, forKey: Keys.noteTemplate) }
+    }
+    @Published var captureText = ""
+    private var capturePanel: NSPanel?
     @Published var showSettings = false
     @Published var showCheatSheet = false
     @Published var alertMessage: String?
@@ -69,6 +84,54 @@ final class AppModel: ObservableObject {
     /// 选中图片附件时，详情区显示预览而不是编辑器
     @Published var selectedAttachment: URL?
     @Published var pendingAttachmentDeletion: URL?
+    @Published var pendingConsolidation = false
+    @Published private(set) var searchIndexBytes = 0
+    @Published var brokenLinks: [BrokenLink] = []
+    @Published var showBrokenLinks = false
+    @Published private(set) var tagCounts: [TagCount] = []
+    @Published var activeTag: String?
+    @Published var showOutline = false
+
+    var visibleNodes: [VisibleNode] {
+        let collapsed = Set(collapsedFolders.map { $0.standardizedFileURL.path })
+        var result: [VisibleNode] = []
+
+        func walk(_ nodes: [VaultNode], _ depth: Int) {
+            for node in nodes {
+                result.append(VisibleNode(node: node, depth: depth))
+                if node.isDirectory, !collapsed.contains(node.url.standardizedFileURL.path) {
+                    walk(node.children ?? [], depth + 1)
+                }
+            }
+        }
+        walk(tree, 0)
+        return result
+    }
+    private var pdfExporter: PDFExporter?
+    var outline: [OutlineItem] { Outline.items(in: text) }
+
+    @Published var conflicts: [ConflictFile] = []
+    @Published var showConflicts = false
+    @Published var conflictIndex = 0
+    @Published var mergeDraft = ""
+    @Published var showMergeEditor = false
+    private var conflictBranch = ""
+
+    @Published var showHistory = false
+    @Published var historyEntries: [FileVersion] = []
+    @Published var historySelection: String? {
+        didSet {
+            guard oldValue != historySelection, let hash = historySelection else { return }
+            loadHistoryPreview(hash)
+        }
+    }
+    @Published var historyPreview = ""
+    @Published var historyLoading = false
+    @Published var historyNoteURL: URL?
+    @Published var showQuickSwitcher = false
+    @Published var quickQuery = ""
+    /// 被正文引用到的图片文件名（用于侧栏标识）
+    @Published private(set) var referencedImageNames: Set<String> = []
     /// 侧栏里的多选（文件或文件夹）。单选文件时同步打开它。
     @Published var sidebarSelection: Set<URL> = [] {
         didSet {
@@ -106,7 +169,7 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var searchResults: [SearchResult] = []
     @Published private(set) var isSearching = false
-    @Published private(set) var backlinks: [Note] = []
+    @Published private(set) var backlinks: [Backlink] = []
     @Published var searchFocusToken = 0
     /// 点了不存在的双链，等用户确认是否新建
     @Published var pendingWikiLink: String?
@@ -156,6 +219,11 @@ final class AppModel: ObservableObject {
     private var lastAttachmentScanAt = Date.distantPast
     private var lastPendingScanAt = Date.distantPast
     private let watcher = VaultWatcher()
+    private var referenceRefreshTask: Task<Void, Never>?
+    private var tagRefreshTask: Task<Void, Never>?
+    private var searchIndex: SearchIndex?
+    private var reindexTask: Task<Void, Never>?
+    private var autoSyncTask: Task<Void, Never>?
     private var clipboardMonitor: Any?
     /// --vault 传进来的临时路径，不写进偏好设置，免得下次启动还停在演示库
     private var transientVault = false
@@ -190,6 +258,9 @@ final class AppModel: ObservableObject {
     init(temporaryVault: URL? = nil) {
         repoURLString = defaults.string(forKey: Keys.repo) ?? ""
         autoCommit = defaults.object(forKey: Keys.autoCommit) as? Bool ?? true
+        autoSync = defaults.object(forKey: Keys.autoSync) as? Bool ?? true
+        dailyTemplate = defaults.string(forKey: Keys.dailyTemplate) ?? Templates.defaultDaily
+        noteTemplate = defaults.string(forKey: Keys.noteTemplate) ?? ""
         mode = EditorMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .split
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 15
         token = TokenStore.load()
@@ -236,7 +307,24 @@ final class AppModel: ObservableObject {
         startWatching()
     }
 
+    private func openSearchIndexIfNeeded() {
+        guard vaultURL != nil else {
+            searchIndex = nil
+            return
+        }
+        guard searchIndex == nil else { return }
+        searchIndex = try? SearchIndex(
+            path: TokenStore.directory.appendingPathComponent("search.sqlite3")
+        )
+        refreshSearchIndexSize()
+    }
+
     private func startWatching() {
+        openSearchIndexIfNeeded()
+        scheduleReindex()
+        // 自检/快照不装 FSEvents：否则测试会留下大量监听和后台 git 子进程
+        if CommandLine.arguments.contains("--self-test")
+            || CommandLine.arguments.contains("--snapshot") { return }
         guard let vault = vaultURL else {
             watcher.stop()
             return
@@ -286,6 +374,9 @@ final class AppModel: ObservableObject {
         if newNotes != notes { notes = newNotes }
         lastReloadAt = Date()
         refreshContentCache()
+        refreshReferencedImages()
+        refreshTags()
+        scheduleReindex()
 
         if let selected = selection, !notes.contains(where: { $0.url == selected }) {
             selection = nil
@@ -365,6 +456,110 @@ final class AppModel: ObservableObject {
         Self.flatten(tree).filter { $0.isDirectory }
     }
 
+    // MARK: - 每日笔记与速记
+
+    func dailyNoteURL(for date: Date = Date()) -> URL? {
+        guard let vault = vaultURL else { return nil }
+        return vault
+            .appendingPathComponent("daily", isDirectory: true)
+            .appendingPathComponent(Templates.dailyName(for: date) + ".md")
+    }
+
+    @discardableResult
+    func ensureDailyNote(for date: Date = Date()) -> URL? {
+        guard let url = dailyNoteURL(for: date) else { return nil }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let body = Templates.render(dailyTemplate, title: Templates.dailyName(for: date), date: date)
+            try? body.write(to: url, atomically: true, encoding: .utf8)
+        }
+        return url
+    }
+
+    func openDailyNote() {
+        guard let url = ensureDailyNote() else {
+            showSettings = true
+            return
+        }
+        reloadNotes()
+        openNote(url)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func toggleQuickCapture() {
+        if let panel = capturePanel, panel.isVisible {
+            panel.orderOut(nil)
+            return
+        }
+
+        if capturePanel == nil {
+            let hosting = NSHostingView(
+                rootView: QuickCaptureView().environmentObject(self)
+            )
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 150),
+                styleMask: [.titled, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.isReleasedWhenClosed = false
+            panel.contentView = hosting
+            capturePanel = panel
+        }
+
+        captureText = ""
+        capturePanel?.center()
+        capturePanel?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func dismissQuickCapture() {
+        captureText = ""
+        capturePanel?.orderOut(nil)
+    }
+
+    func submitCapture() {
+        let content = captureText.trimmed
+        guard !content.isEmpty, let url = ensureDailyNote() else {
+            dismissQuickCapture()
+            return
+        }
+
+        appendCapture(content, to: url)
+        captureText = ""
+        capturePanel?.orderOut(nil)
+        reloadNotes()
+        if selection == url { loadSelected() }
+    }
+
+    private func appendCapture(_ text: String, to url: URL) {
+        var body = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        let line = "- \(formatter.string(from: Date())) \(text)"
+
+        let heading = "## 速记"
+        if let headingRange = body.range(of: heading) {
+            let afterHeading = body.index(after: headingRange.upperBound)
+            if let newline = body[afterHeading...].firstIndex(of: "\n") {
+                body.insert(contentsOf: line + "\n", at: body.index(after: newline))
+            } else {
+                body += "\n\n" + line + "\n"
+            }
+        } else {
+            body += "\n\n" + heading + "\n" + line + "\n"
+        }
+
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     func createNote(in folder: URL? = nil, fileExtension: String = "md") {
         guard let vault = vaultURL else {
             showSettings = true
@@ -381,7 +576,14 @@ final class AppModel: ObservableObject {
             index += 1
         }
         do {
-            let initial = ext == "txt" ? "" : "# \n"
+            let initial: String
+            if ext == "txt" {
+                initial = ""
+            } else if noteTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                initial = "# \n"
+            } else {
+                initial = Templates.render(noteTemplate, title: "未命名")
+            }
             try initial.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             alertMessage = "新建失败：\(error.localizedDescription)"
@@ -404,6 +606,12 @@ final class AppModel: ObservableObject {
     }
 
     func openNote(_ url: URL) {
+        // 图片不是笔记：走附件预览，绝不能当文本读
+        if Self.isImageFile(url) {
+            sidebarSelection = [url]
+            selectedAttachment = url
+            return
+        }
         sidebarSelection = [url]
         selectedAttachment = nil
         if selection != url { selection = url }
@@ -420,6 +628,180 @@ final class AppModel: ObservableObject {
             guard let content = contentCache[note.url]?.text else { return false }
             return content.contains(name)
         }
+    }
+
+    // MARK: - 链接一致性
+
+    private static func filesUnder(_ folder: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                files.append(url)
+            }
+        }
+        return files
+    }
+
+    /// 把所有笔记里的相对链接按 moves 重算，并可选地改写 wiki 链接标题
+    private func rewriteAllLinks(moves: [String: String], titleChange: (old: String, new: String)?) {
+        guard let vault = vaultURL, !moves.isEmpty || titleChange != nil else { return }
+
+        let noteURLs = Self.flatten(Self.buildTree(at: vault, root: vault))
+            .filter { $0.isNote }
+            .map(\.url)
+        let inverse = Dictionary(uniqueKeysWithValues: moves.map { ($1, $0) })
+
+        for newURL in noteURLs {
+            let oldURL = inverse[newURL.path].map { URL(fileURLWithPath: $0) } ?? newURL
+            guard let data = try? Data(contentsOf: newURL),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+
+            let updated = LinkRewriter.rewrite(
+                in: text,
+                oldNotePath: oldURL,
+                newNotePath: newURL,
+                moves: moves,
+                titleChange: titleChange
+            )
+            if updated != text {
+                try? updated.write(to: newURL, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    /// 检查断链：不存在的 [[笔记]] 和不存在的本地文件
+    func checkBrokenLinks() {
+        let titles = Set(notes.map { $0.title.lowercased() })
+        var found: [BrokenLink] = []
+        var seen = Set<String>()
+
+        for note in notes {
+            guard let text = contentCache[note.url]?.text else { continue }
+
+            for target in WikiLinks.targets(in: text) {
+                let base = target.split(separator: "#").first.map(String.init) ?? target
+                let last = (base as NSString).lastPathComponent
+                if !titles.contains(base.lowercased()), !titles.contains(last.lowercased()) {
+                    let key = "w|\(note.url.path)|\(target)"
+                    if seen.insert(key).inserted {
+                        found.append(BrokenLink(note: note, target: target, isWiki: true))
+                    }
+                }
+            }
+
+            let directory = note.url.deletingLastPathComponent()
+            for source in LinkRewriter.localLinkTargets(in: text) {
+                let path = source.removingPercentEncoding ?? source
+                let absolute = directory.appendingPathComponent(path).standardizedFileURL
+                if !FileManager.default.fileExists(atPath: absolute.path) {
+                    let key = "f|\(note.url.path)|\(source)"
+                    if seen.insert(key).inserted {
+                        found.append(BrokenLink(note: note, target: source, isWiki: false))
+                    }
+                }
+            }
+        }
+
+        brokenLinks = found
+        showBrokenLinks = true
+    }
+
+    // MARK: - 附件整理
+
+    /// 把散落在各目录 assets/ 里的文件搬到根 assets/，并改写笔记里的引用
+    func consolidateAttachments() {
+        defer { pendingConsolidation = false }
+        guard let vault = vaultURL else { return }
+
+        let rootAssets = vault.appendingPathComponent("assets", isDirectory: true)
+        try? FileManager.default.createDirectory(at: rootAssets, withIntermediateDirectories: true)
+        let allNodes = Self.flatten(tree)
+        let folders = allNodes.filter {
+            $0.isDirectory
+                && $0.name.lowercased() == "assets"
+                && $0.url.standardizedFileURL != rootAssets.standardizedFileURL
+        }
+        guard !folders.isEmpty else {
+            infoMessage = "没有需要整理的附件目录。"
+            return
+        }
+
+        var moved: [String: String] = [:]
+        for folder in folders {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: folder.url,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            for file in files {
+                guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                guard let destination = try? Self.moveItem(at: file, to: rootAssets) else { continue }
+                moved[file.standardizedFileURL.path] = destination.standardizedFileURL.path
+            }
+
+            let leftover = (try? FileManager.default.contentsOfDirectory(atPath: folder.url.path)) ?? []
+            if leftover.isEmpty { try? FileManager.default.removeItem(at: folder.url) }
+        }
+
+        guard !moved.isEmpty else {
+            infoMessage = "没有找到可整理的附件。"
+            return
+        }
+
+        var rewritten = 0
+        for note in notes {
+            guard let data = try? Data(contentsOf: note.url),
+                  var text = String(data: data, encoding: .utf8) else { continue }
+            let updated = Self.rewriteImageLinks(
+                in: text,
+                noteDirectory: note.url.deletingLastPathComponent(),
+                moved: moved
+            )
+            if updated != text {
+                if (try? updated.write(to: note.url, atomically: true, encoding: .utf8)) != nil {
+                    rewritten += 1
+                }
+                text = updated
+            }
+        }
+
+        reloadNotes()
+        infoMessage = "已移动 \(moved.count) 个附件到根 assets/，更新了 \(rewritten) 篇笔记的引用。"
+    }
+
+    /// 把笔记里指向已移动图片的路径，改成从新位置算出的相对路径
+    nonisolated static func rewriteImageLinks(
+        in text: String,
+        noteDirectory: URL,
+        moved: [String: String]
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\(([^)\s]+)\)"#) else { return text }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        var result = text
+
+        for match in matches.reversed() {
+            let srcRange = match.range(at: 1)
+            let src = ns.substring(with: srcRange)
+            if src.hasPrefix("http") || src.hasPrefix("data:") { continue }
+            let decoded = src.removingPercentEncoding ?? src
+            let absolute = noteDirectory.appendingPathComponent(decoded).standardizedFileURL
+            guard let newPath = moved[absolute.path] else { continue }
+
+            let newSource = AttachmentStore.relativePath(
+                from: noteDirectory,
+                to: URL(fileURLWithPath: newPath)
+            )
+            result = (result as NSString).replacingCharacters(in: srcRange, with: newSource)
+        }
+        return result
     }
 
     func requestDeleteAttachment(_ url: URL) {
@@ -520,6 +902,10 @@ final class AppModel: ObservableObject {
         let name = renameText.trimmed
         guard !name.isEmpty else { return }
 
+        guard Self.canRename(target) else {
+            alertMessage = "assets 是附件约定目录，改名会让所有图片引用失效，已阻止。"
+            return
+        }
         let isDirectory = (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
         var fileName = name
         if !isDirectory, !target.pathExtension.isEmpty,
@@ -533,10 +919,167 @@ final class AppModel: ObservableObject {
         let wasSelected = selection == target
         do {
             try FileManager.default.moveItem(at: target, to: destination)
+
+            var moves = [target.standardizedFileURL.path: destination.standardizedFileURL.path]
+            if isDirectory {
+                for newFile in Self.filesUnder(destination) {
+                    let suffix = newFile.path.dropFirst(destination.path.count)
+                    moves[target.path + suffix] = newFile.path
+                }
+            }
+
+            let oldTitle = target.deletingPathExtension().lastPathComponent
+            let newTitle = destination.deletingPathExtension().lastPathComponent
+            let titleChange: (old: String, new: String)? = isDirectory
+                ? nil
+                : (VaultNode.noteExtensions.contains(target.pathExtension.lowercased())
+                   ? (oldTitle, newTitle) : nil)
+
+            rewriteAllLinks(moves: moves, titleChange: titleChange)
             reloadNotes()
-            if wasSelected { selection = destination }
+            if wasSelected {
+                selection = destination
+                loadSelected()
+            }
         } catch {
             alertMessage = "重命名失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// assets 是附件约定目录，改名会让所有相对引用失效
+    nonisolated static func canRename(_ url: URL) -> Bool {
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        if isDirectory, url.lastPathComponent.lowercased() == "assets" { return false }
+        return true
+    }
+
+    private func refreshReferencedImages() {
+        let imageNames = Set(Self.flatten(tree).filter { $0.isImage }.map { $0.name })
+        guard !imageNames.isEmpty else {
+            if !referencedImageNames.isEmpty { referencedImageNames = [] }
+            return
+        }
+        var referenced = Set<String>()
+        for note in notes {
+            guard let content = contentCache[note.url]?.text else { continue }
+            for name in imageNames where content.contains(name) {
+                referenced.insert(name)
+            }
+        }
+        if referenced != referencedImageNames { referencedImageNames = referenced }
+    }
+
+    func refreshSearchIndexSize() {
+        searchIndexBytes = searchIndex?.sizeBytes ?? 0
+    }
+
+    /// 设置页：重建索引
+    func rebuildSearchIndex() {
+        guard let index = searchIndex else { return }
+        let documents = notes.map {
+            SearchIndex.Document(path: $0.url.path, title: $0.title, body: contentCache[$0.url]?.text ?? "")
+        }
+        Task {
+            await Task.detached(priority: .utility) { index.replaceAll(documents) }.value
+            refreshSearchIndexSize()
+            infoMessage = "索引已重建。"
+        }
+    }
+
+    /// 设置页：压缩索引
+    func compactSearchIndex() {
+        guard let index = searchIndex else { return }
+        Task {
+            await Task.detached(priority: .utility) { index.compact() }.value
+            let before = searchIndexBytes
+            refreshSearchIndexSize()
+            let saved = max(0, before - searchIndexBytes)
+            infoMessage = "索引已压缩，回收 \(ByteCountFormatter.string(fromByteCount: Int64(saved), countStyle: .file))。"
+        }
+    }
+
+    private func scheduleReindex() {
+        guard let index = searchIndex else { return }
+        let documents = notes.map {
+            SearchIndex.Document(
+                path: $0.url.path,
+                title: $0.title,
+                body: contentCache[$0.url]?.text ?? ""
+            )
+        }
+
+        reindexTask?.cancel()
+        reindexTask = Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            await Task.detached(priority: .utility) {
+                index.replaceAll(documents)
+            }.value
+            refreshSearchIndexSize()
+        }
+    }
+
+    /// ⌘P 结果：空查询显示最近笔记，否则按标题模糊排序
+    var quickResults: [Note] {
+        let query = quickQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return Array(notes.prefix(12)) }
+
+        let byTitle = Dictionary(grouping: notes, by: { $0.title })
+        return FuzzyMatch.ranked(query, candidates: notes.map(\.title))
+            .compactMap { byTitle[$0]?.first }
+            .prefix(12)
+            .map { $0 }
+    }
+
+    func openQuickResult(_ note: Note) {
+        showQuickSwitcher = false
+        openNote(note.url)
+    }
+
+    var taggedNotes: [Note] {
+        guard let tag = activeTag else { return [] }
+        return notes.filter { note in
+            guard let text = contentCache[note.url]?.text else { return false }
+            return TagParser.tags(in: text).contains { $0.caseInsensitiveCompare(tag) == .orderedSame }
+        }
+    }
+
+    private func refreshTags() {
+        var counts: [String: Int] = [:]
+        var display: [String: String] = [:]
+        for note in notes {
+            guard let text = contentCache[note.url]?.text else { continue }
+            for tag in TagParser.tags(in: text) {
+                let key = tag.lowercased()
+                counts[key, default: 0] += 1
+                display[key] = tag
+            }
+        }
+        let sorted = counts.keys
+            .sorted { counts[$0]! > counts[$1]! }
+            .map { TagCount(name: display[$0] ?? $0, count: counts[$0]!) }
+        if sorted != tagCounts { tagCounts = sorted }
+        if let active = activeTag,
+           !tagCounts.contains(where: { $0.name.caseInsensitiveCompare(active) == .orderedSame }) {
+            activeTag = nil
+        }
+    }
+
+    private func scheduleTagRefresh() {
+        tagRefreshTask?.cancel()
+        tagRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            self?.refreshTags()
+        }
+    }
+
+    private func scheduleReferenceRefresh() {
+        referenceRefreshTask?.cancel()
+        referenceRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            self?.refreshReferencedImages()
         }
     }
 
@@ -604,6 +1147,7 @@ final class AppModel: ObservableObject {
 
         var selectionAfterMove: URL?
         var movedFolders: [(from: URL, to: URL)] = []
+        var moves: [String: String] = [:]
 
         for raw in urls {
             let source = raw.standardizedFileURL.resolvingSymlinksInPath()
@@ -615,7 +1159,15 @@ final class AppModel: ObservableObject {
             let isDirectory = (try? source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             do {
                 guard let destination = try Self.moveItem(at: source, to: target) else { continue }
-                if isDirectory { movedFolders.append((source, destination)) }
+                if isDirectory {
+                    movedFolders.append((source, destination))
+                    for newFile in Self.filesUnder(destination) {
+                        let suffix = newFile.path.dropFirst(destination.path.count)
+                        moves[source.path + suffix] = newFile.path
+                    }
+                } else {
+                    moves[source.path] = destination.path
+                }
                 if selection == source { selectionAfterMove = destination }
             } catch {
                 alertMessage = "移动失败：\(error.localizedDescription)"
@@ -630,11 +1182,13 @@ final class AppModel: ObservableObject {
             }
         }
 
+        rewriteAllLinks(moves: moves, titleChange: nil)
         reloadNotes()
         if let selectionAfterMove, FileManager.default.fileExists(atPath: selectionAfterMove.path) {
             openNote(selectionAfterMove)
         } else {
             sidebarSelection = []
+            loadSelected()
         }
     }
 
@@ -716,14 +1270,75 @@ final class AppModel: ObservableObject {
         isSearching = true
         searchGeneration &+= 1
         let generation = searchGeneration
-        let documents = notes.map { (note: $0, text: contentCache[$0.url]?.text ?? "") }
+
+        let parsed = SearchQuery.parse(query)
+        let filteredNotes = notes.filter { note in
+            if !parsed.tags.isEmpty {
+                let text = contentCache[note.url]?.text ?? ""
+                let tags = TagParser.tags(in: text).map { $0.lowercased() }
+                if !parsed.tags.allSatisfy({ tags.contains($0) }) { return false }
+            }
+            if !parsed.folders.isEmpty {
+                let path = note.relativePath.lowercased()
+                if !parsed.folders.allSatisfy({ path.contains($0) }) { return false }
+            }
+            if parsed.before != nil || parsed.after != nil {
+                let date = (try? note.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                    ?? Date.distantPast
+                if let before = parsed.before, date >= before { return false }
+                if let after = parsed.after, date < after { return false }
+            }
+            return true
+        }
+
+        let searchTerms = parsed.terms.joined(separator: " ")
+        let documents = filteredNotes.map { (note: $0, text: contentCache[$0.url]?.text ?? "") }
+        let index = searchIndex
+
+        if searchTerms.isEmpty {
+            searchResults = filteredNotes.map { note in
+                SearchResult(
+                    note: note,
+                    score: 0,
+                    matches: 0,
+                    snippet: note.relativePath
+                )
+            }
+            isSearching = false
+            return
+        }
 
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
 
             let results = await Task.detached(priority: .userInitiated) {
-                SearchEngine.search(query: query, in: documents)
+                guard let index, index.documentCount > 0 else {
+                    return SearchEngine.search(query: searchTerms, in: documents)
+                }
+
+                guard let hits = try? index.search(searchTerms) else {
+                    return SearchEngine.search(query: searchTerms, in: documents)
+                }
+
+                let byPath = Dictionary(
+                    uniqueKeysWithValues: documents.map { ($0.note.url.path, $0) }
+                )
+                let terms = SearchEngine.terms(from: searchTerms)
+
+                return hits.compactMap { hit -> SearchResult? in
+                    guard let document = byPath[hit.path] else { return nil }
+                    let offset = SearchEngine.firstMatchOffset(of: terms, in: document.text) ?? 0
+                    let matches = terms.reduce(0) {
+                        $0 + SearchEngine.occurrences(of: $1, in: document.text)
+                    }
+                    return SearchResult(
+                        note: document.note,
+                        score: Int(hit.score * 1000),
+                        matches: matches,
+                        snippet: SearchEngine.snippet(from: document.text, around: offset)
+                    )
+                }
             }.value
 
             guard !Task.isCancelled, let self, self.searchGeneration == generation else { return }
@@ -740,10 +1355,28 @@ final class AppModel: ObservableObject {
             return
         }
         let title = current.title
-        backlinks = notes.filter { note in
-            guard note.url != url, let content = contentCache[note.url]?.text else { return false }
-            return WikiLinks.refers(content, to: title)
+        var found: [Backlink] = []
+
+        for note in notes where note.url != url {
+            guard let content = contentCache[note.url]?.text,
+                  let regex = try? NSRegularExpression(pattern: WikiLinks.pattern) else { continue }
+            let ns = content as NSString
+            let matches = regex.matches(in: content, range: NSRange(location: 0, length: ns.length))
+
+            for match in matches {
+                let target = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                let last = (target as NSString).lastPathComponent
+                let hit = target.caseInsensitiveCompare(title) == .orderedSame
+                    || last.caseInsensitiveCompare(title) == .orderedSame
+                guard hit else { continue }
+
+                let lineRange = ns.lineRange(for: match.range)
+                let line = ns.substring(with: lineRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                found.append(Backlink(note: note, excerpt: line, offset: lineRange.location))
+                break
+            }
         }
+        backlinks = found
     }
 
     func openWikiLink(_ target: String) {
@@ -833,7 +1466,7 @@ final class AppModel: ObservableObject {
     private func loadSelected() {
         previewTask?.cancel()
 
-        guard let url = selection, let data = try? Data(contentsOf: url) else {
+        guard let url = selection, !Self.isImageFile(url), let data = try? Data(contentsOf: url) else {
             text = ""
             previewHTML = ""
             previewBody = ""
@@ -869,7 +1502,18 @@ final class AppModel: ObservableObject {
             loadedMTime = Self.modificationDate(of: url)
             contentCache[url] = (loadedMTime, text)
             if isSearchActive { scheduleSearch() }
+            scheduleReferenceRefresh()
+            scheduleTagRefresh()
+            if let index = searchIndex, let note = currentNote {
+                let document = SearchIndex.Document(
+                    path: note.url.path,
+                    title: note.title,
+                    body: text
+                )
+                Task.detached(priority: .utility) { index.upsert(document) }
+            }
             scheduleAutoCommit()
+            scheduleAutoSync()
         } catch {
             alertMessage = "保存失败：\(error.localizedDescription)"
         }
@@ -1049,6 +1693,7 @@ final class AppModel: ObservableObject {
             if outcome.committed {
                 syncState = .ok("已本地提交 \(outcome.hash)")
                 updatePendingChanges()
+                scheduleAutoSync()
             }
         } catch {
             syncState = .failed(error.localizedDescription)
@@ -1186,20 +1831,286 @@ final class AppModel: ObservableObject {
             showPasteDiagnostics()
             return
         }
-        guard let relative = AttachmentStore.save(
-            data: png,
-            name: "截图",
-            into: url.deletingLastPathComponent()
-        ) else {
+        let base = vaultURL ?? url.deletingLastPathComponent()
+        guard let fileURL = AttachmentStore.save(data: png, name: "截图", into: base) else {
             alertMessage = "截图没能写进 assets/，检查这个目录的写入权限。"
             return
         }
 
-        let markup = isPlainTextNote ? "\n\(relative)\n" : "\n![截图](\(relative))\n"
+        let link = AttachmentStore.relativePath(from: url.deletingLastPathComponent(), to: fileURL)
+        let markup = isPlainTextNote ? "\n\(link)\n" : "\n![截图](\(link))\n"
         if mode == .preview { mode = .split }
         textChanged(text + markup)
         saveNow()
-        infoMessage = "已插入截图并保存为 \(relative)"
+        infoMessage = "已插入截图并保存为 \(link)"
+    }
+
+    // MARK: - 版本历史
+
+    private func relativePath(_ url: URL, root: URL) -> String {
+        let base = root.standardizedFileURL.path
+        let full = url.standardizedFileURL.path
+        if full.hasPrefix(base + "/") {
+            return String(full.dropFirst(base.count + 1))
+        }
+        return url.lastPathComponent
+    }
+
+    func openHistory() {
+        openHistory(for: nil)
+    }
+
+    /// 侧栏右键可以直接查看某篇笔记的历史，不用先打开它
+    func openHistory(for url: URL?) {
+        flushPendingSave()
+        guard let vault = vaultURL else { return }
+        let target = url ?? selection
+        guard let target else { return }
+        if selection != target {
+            openNote(target)
+        }
+
+        let engine = GitEngine(token: token)
+        guard engine.isRepository(vault), let root = engine.repoRoot(vault) else {
+            infoMessage = "当前笔记库还不是 git 仓库，暂时没有版本历史。"
+            return
+        }
+
+        historyNoteURL = target
+        historyEntries = engine.fileLog(relativePath(target, root: root), in: vault)
+        historyPreview = ""
+        historySelection = historyEntries.first?.id
+        showHistory = true
+        if let hash = historySelection, historyPreview.isEmpty { loadHistoryPreview(hash) }
+    }
+
+    func loadHistoryPreview(_ hash: String) {
+        guard let note = historyNoteURL, let vault = vaultURL else { return }
+        let engine = GitEngine(token: token)
+        guard let root = engine.repoRoot(vault) else { return }
+        let path = relativePath(note, root: root)
+
+        historyLoading = true
+        Task {
+            let text = try? await Self.offMain { try engine.fileContent(path, at: hash, in: vault) }
+            historyPreview = text ?? "（这个版本读不出来）"
+            historyLoading = false
+        }
+    }
+
+    func restoreSelectedVersion() {
+        guard let note = historyNoteURL,
+              let hash = historySelection,
+              let vault = vaultURL else { return }
+        let engine = GitEngine(token: token)
+        guard let root = engine.repoRoot(vault) else { return }
+        let path = relativePath(note, root: root)
+
+        do {
+            try engine.restoreFile(path, from: hash, in: vault)
+            showHistory = false
+            reloadNotes()
+            if selection == note { loadSelected() }
+            infoMessage = "已恢复到 \(String(hash.prefix(7)))，保存后会作为新版本提交。"
+        } catch {
+            alertMessage = "恢复失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - 自动同步
+
+    private func scheduleAutoSync() {
+        guard autoSync else { return }
+        autoSyncTask?.cancel()
+        autoSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            guard !self.isBusy, !self.token.trimmed.isEmpty else { return }
+            guard let vault = self.vaultURL else { return }
+            let engine = GitEngine(token: self.token)
+            guard engine.isRepository(vault), engine.remoteURL(vault) != nil else { return }
+            self.sync(silent: true)
+        }
+    }
+
+    // MARK: - 导出
+
+    func exportHTML() {
+        guard let note = currentNote else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = note.title + ".html"
+        panel.allowedContentTypes = [.html]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let html = Markdown.document(
+            from: text,
+            baseDirectory: note.url.deletingLastPathComponent(),
+            fontSize: fontSize
+        )
+        do {
+            try html.write(to: url, atomically: true, encoding: .utf8)
+            infoMessage = "已导出 HTML 到 \(url.lastPathComponent)"
+        } catch {
+            alertMessage = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
+    func exportPDF() {
+        guard let note = currentNote else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = note.title + ".pdf"
+        panel.allowedContentTypes = [.pdf]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let html = Markdown.document(
+            from: text,
+            baseDirectory: note.url.deletingLastPathComponent(),
+            fontSize: fontSize
+        )
+        let exporter = PDFExporter()
+        pdfExporter = exporter
+        exporter.render(html: html) { [weak self] data in
+            defer { self?.pdfExporter = nil }
+            guard let data else {
+                self?.alertMessage = "PDF 渲染失败，可以先试试导出 HTML。"
+                return
+            }
+            do {
+                try data.write(to: url)
+                self?.infoMessage = "已导出 PDF 到 \(url.lastPathComponent)"
+            } catch {
+                self?.alertMessage = "PDF 写入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - 冲突处理
+
+    func beginConflictResolution(paths: [String], branch: String) {
+        guard let vault = vaultURL else { return }
+        let engine = GitEngine(token: token)
+        guard let root = engine.repoRoot(vault) else { return }
+
+        conflictBranch = branch
+        conflicts = paths.map { path in
+            let local = (try? String(
+                contentsOf: root.appendingPathComponent(path),
+                encoding: .utf8
+            )) ?? ""
+            let remote = engine.remoteFileContent(path, branch: branch, in: vault) ?? ""
+            return ConflictFile(path: path, localText: local, remoteText: remote)
+        }
+        conflictIndex = 0
+        mergeDraft = conflicts.first?.localText ?? ""
+        showMergeEditor = false
+        showConflicts = !conflicts.isEmpty
+    }
+
+    var allConflictsResolved: Bool {
+        !conflicts.isEmpty && conflicts.allSatisfy(\.resolved)
+    }
+
+    func resolveConflictKeepLocal() {
+        guard conflicts.indices.contains(conflictIndex) else { return }
+        conflicts[conflictIndex].resolved = true
+        conflicts[conflictIndex].finalText = nil
+        advanceConflict()
+    }
+
+    func resolveConflictUseRemote() {
+        guard conflicts.indices.contains(conflictIndex) else { return }
+        conflicts[conflictIndex].resolved = true
+        conflicts[conflictIndex].finalText = conflicts[conflictIndex].remoteText
+        advanceConflict()
+    }
+
+    func saveConflictMerge() {
+        guard conflicts.indices.contains(conflictIndex) else { return }
+        conflicts[conflictIndex].resolved = true
+        conflicts[conflictIndex].finalText = mergeDraft
+        advanceConflict()
+    }
+
+    private func advanceConflict() {
+        showMergeEditor = false
+        if let next = conflicts.firstIndex(where: { !$0.resolved }) {
+            conflictIndex = next
+            mergeDraft = conflicts[next].localText
+        } else {
+            conflictIndex = 0
+        }
+    }
+
+    func cancelConflicts() {
+        showConflicts = false
+        showMergeEditor = false
+    }
+
+    func finishConflicts() {
+        guard allConflictsResolved, let vault = vaultURL else { return }
+        let engine = GitEngine(token: token)
+        guard let root = engine.repoRoot(vault) else { return }
+
+        for file in conflicts {
+            guard let text = file.finalText else { continue }
+            try? text.write(
+                to: root.appendingPathComponent(file.path),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        let branch = conflictBranch
+        let pending = conflicts
+        Task {
+            do {
+                _ = try await Self.offMain {
+                    try engine.commitIfNeeded("merge: 解决同步冲突", in: vault)
+                }
+                // 用 ours 策略合并历史：冲突文件保留用户刚才选定的内容
+                let pull = try await Self.offMain {
+                    try engine.run(
+                        ["pull", "--no-rebase", "-X", "ours", "origin", branch],
+                        in: vault,
+                        network: true
+                    )
+                }
+                guard pull.ok else {
+                    throw GitError.command(GitEngine.friendlyMessage(for: pull))
+                }
+                let push = try await Self.offMain {
+                    try engine.run(["push", "-u", "origin", branch], in: vault, network: true)
+                }
+                guard push.ok else {
+                    throw GitError.command(GitEngine.friendlyMessage(for: push))
+                }
+
+                await MainActor.run {
+                    showConflicts = false
+                    conflicts = []
+                    reloadNotes()
+                    loadSelected()
+                    syncState = .ok("冲突已解决并推送（\(pending.count) 个文件）")
+                }
+            } catch {
+                alertMessage = "解决冲突后同步失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func copyCode(_ code: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(code, forType: .string)
+    }
+
+    /// 预览里勾选任务清单：改回源文本并保存
+    func toggleTask(line: Int, checked: Bool) {
+        var lines = text.components(separatedBy: "\n")
+        guard lines.indices.contains(line),
+              let updated = Markdown.toggledTaskLine(lines[line], checked: checked) else { return }
+        lines[line] = updated
+        textChanged(lines.joined(separator: "\n"))
+        saveNow()
     }
 
     /// 排查粘贴问题：报告当前焦点在谁身上、剪贴板里到底有什么类型
@@ -1275,8 +2186,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func sync() {
-        guard prepareToken() else { return }
+    func sync(silent: Bool = false) {
+        guard !silent || !token.trimmed.isEmpty else { return }
+        guard silent || prepareToken() else { return }
         guard let vault = vaultURL else {
             alertMessage = "先选择笔记库文件夹"
             return
@@ -1289,6 +2201,11 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let outcome = try await Self.offMain { try engine.sync(vault) }
+                if !outcome.conflicts.isEmpty {
+                    beginConflictResolution(paths: outcome.conflicts, branch: outcome.branch)
+                    syncState = .failed("有 \(outcome.conflicts.count) 个文件冲突，等待处理")
+                    return
+                }
                 syncState = .ok(outcome.summary)
                 branch = outcome.branch
                 reloadNotes()

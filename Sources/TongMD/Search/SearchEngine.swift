@@ -80,6 +80,17 @@ enum SearchEngine {
         }
     }
 
+    /// 多关键词里最早出现的位置（用于生成片段）
+    static func firstMatchOffset(of terms: [String], in text: String) -> Int? {
+        var earliest: Int?
+        for term in terms {
+            guard let range = text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
+            let offset = text.distance(from: text.startIndex, to: range.lowerBound)
+            if earliest == nil || offset < earliest! { earliest = offset }
+        }
+        return earliest
+    }
+
     static func occurrences(of keyword: String, in text: String) -> Int {
         guard !keyword.isEmpty else { return 0 }
         var count = 0

@@ -6,6 +6,57 @@ struct TongMDApp: App {
 
     init() {
         #if DEBUG
+        if CommandLine.arguments.contains("--git-probe") {
+            let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("gitprobe-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let git = GitEngine(token: "")
+            let initResult = try? git.run(
+                ["init", "--bare", "-b", "main", "p.git"], in: dir
+            )
+            print("init:", initResult?.code ?? -1, initResult?.error ?? "")
+            let ls = try? git.lsRemote(dir.appendingPathComponent("p.git").path)
+            print("ls:", ls ?? "nil")
+            exit(0)
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--window-shot"),
+           CommandLine.arguments.count > index + 1 {
+            let output = CommandLine.arguments[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                    exit(1)
+                }
+                window.setFrame(NSRect(x: 120, y: 120, width: 1000, height: 720), display: true)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                let target = window.contentView?.superview ?? window.contentView
+                guard let target,
+                      let rep = target.bitmapImageRepForCachingDisplay(in: target.bounds) else {
+                    exit(1)
+                }
+                target.cacheDisplay(in: target.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: output))
+                exit(0)
+            }
+        }
+        if CommandLine.arguments.contains("--dump-toolbar") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                for window in NSApp.windows {
+                    print("WINDOW:", window.title, window.frame)
+                    for item in window.toolbar?.items ?? [] {
+                        let frame = item.view?.frame ?? .zero
+                        print("  ITEM:", item.itemIdentifier.rawValue, "|label=", item.label,
+                              "|frame=", frame,
+                              "|subviews=", item.view?.subviews.count ?? -1)
+                    }
+                }
+                exit(0)
+            }
+        }
+        if CommandLine.arguments.contains("--search-bench") {
+            exit(SearchBench.run())
+        }
         if CommandLine.arguments.contains("--dump-menu") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 if let menu = NSApp.mainMenu {
@@ -38,6 +89,15 @@ struct TongMDApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands { TongMDCommands(model: model) }
+
+        MenuBarExtra("TongMD", systemImage: "square.and.pencil") {
+            Button("快速记录…") { model.toggleQuickCapture() }
+                .disabled(model.vaultURL == nil)
+            Button("今日笔记") { model.openDailyNote() }
+                .disabled(model.vaultURL == nil)
+            Divider()
+            Button("打开主窗口") { NSApp.activate(ignoringOtherApps: true) }
+        }
     }
 }
 
@@ -58,6 +118,28 @@ struct TongMDCommands: Commands {
         CommandGroup(replacing: .saveItem) {
             Button("保存") { model.saveNow() }
                 .keyboardShortcut("s", modifiers: .command)
+            Button("今日笔记") { model.openDailyNote() }
+                .keyboardShortcut("d", modifiers: [.command, .option])
+                .disabled(model.vaultURL == nil)
+            Button("快速记录…") { model.toggleQuickCapture() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(model.vaultURL == nil)
+            Divider()
+            Button("导出 HTML…") { model.exportHTML() }
+                .disabled(model.currentNote == nil)
+            Button("导出 PDF…") { model.exportPDF() }
+                .disabled(model.currentNote == nil)
+            Divider()
+            Button("版本历史…") { model.openHistory() }
+                .keyboardShortcut("y", modifiers: [.command])
+                .disabled(model.vaultURL == nil)
+            Button("快速切换…") { model.showQuickSwitcher = true }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(model.vaultURL == nil)
+            Button("检查断链…") { model.checkBrokenLinks() }
+                .disabled(model.vaultURL == nil)
+            Button("整理附件到 assets/…") { model.pendingConsolidation = true }
+                .disabled(model.vaultURL == nil)
             Button("关闭标签页") { model.closeActiveTab() }
                 .keyboardShortcut("w", modifiers: .command)
                 .disabled(model.openTabs.isEmpty)
@@ -115,6 +197,14 @@ struct TongMDCommands: Commands {
             Button("粘贴诊断…") { model.showPasteDiagnostics() }
             Button("插入剪贴板截图") { model.insertScreenshotFromClipboard() }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
+            Button("删除线") { EditorActions.perform("toggleStrikethrough:") }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
+            Button("高亮") { EditorActions.perform("toggleHighlight:") }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+            Button("任务清单") { EditorActions.perform("toggleTaskList:") }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+            Button("插入表格") { EditorActions.perform("insertTable:") }
+            Button("分割线") { EditorActions.perform("insertHorizontalRule:") }
             Button("链接") { EditorActions.perform("insertMarkdownLink:") }
                 .keyboardShortcut("k", modifiers: .command)
 

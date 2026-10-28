@@ -15,13 +15,22 @@ struct FormatBar: View {
 
             iconButton("bold", selector: "toggleBold:", help: "粗体  ⌘B")
             iconButton("italic", selector: "toggleItalic:", help: "斜体  ⌘I")
+            iconButton("strikethrough", selector: "toggleStrikethrough:", help: "删除线  ⇧⌘X")
+            iconButton("highlighter", selector: "toggleHighlight:", help: "高亮  ⇧⌘H")
             iconButton("chevron.left.slash.chevron.right", selector: "toggleInlineCode:", help: "行内代码  ⇧⌘C")
             iconButton("link", selector: "insertMarkdownLink:", help: "链接  ⌘K")
 
             divider
 
             iconButton("list.bullet", selector: "toggleBulletList:", help: "无序列表  ⇧⌘L")
+            iconButton("list.number", selector: "toggleNumberedList:", help: "有序列表")
+            iconButton("checklist", selector: "toggleTaskList:", help: "任务清单  ⇧⌘T")
             iconButton("text.quote", selector: "toggleBlockquote:", help: "引用  ⇧⌘B")
+
+            divider
+
+            iconButton("tablecells", selector: "insertTable:", help: "插入表格")
+            iconButton("minus", selector: "insertHorizontalRule:", help: "分割线")
 
             Spacer()
 
@@ -41,14 +50,22 @@ struct FormatBar: View {
             .buttonStyle(.borderless)
             .help("放大字号 ⌘+")
 
-            Button {
-                EditorActions.perform("toggleCodeBlock:")
+            Menu {
+                Button("Swift") { EditorActions.perform("insertSwiftCodeBlock:") }
+                Button("Python") { EditorActions.perform("insertPythonCodeBlock:") }
+                Button("JavaScript") { EditorActions.perform("insertJavaScriptCodeBlock:") }
+                Button("Bash") { EditorActions.perform("insertBashCodeBlock:") }
+                Button("Java") { EditorActions.perform("insertJavaCodeBlock:") }
+                Button("SQL") { EditorActions.perform("insertSQLCodeBlock:") }
+                Divider()
+                Button("纯文本") { EditorActions.perform("toggleCodeBlock:") }
             } label: {
                 Label("代码块", systemImage: "curlybraces")
                     .labelStyle(.titleAndIcon)
                     .font(.system(size: 11))
             }
-            .buttonStyle(.borderless)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             .help("代码块  ⇧⌘K")
         }
         .padding(.horizontal, 12)

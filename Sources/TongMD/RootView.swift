@@ -85,6 +85,9 @@ struct SidebarView: View {
             } else {
                 VStack(spacing: 0) {
                     searchField
+                    if !model.tagCounts.isEmpty, !model.isSearchActive {
+                        tagsBar
+                    }
                     Divider()
                     if model.isSearchActive {
                         searchResultsList
@@ -182,13 +185,58 @@ struct SidebarView: View {
         }
     }
 
+    // MARK: - 标签
+
+    private var tagsBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if model.activeTag != nil {
+                    tagChip("全部", active: false) { model.activeTag = nil }
+                }
+                ForEach(model.tagCounts.prefix(24)) { tag in
+                    let active = model.activeTag?.caseInsensitiveCompare(tag.name) == .orderedSame
+                    tagChip("#\(tag.name) \(tag.count)", active: active) {
+                        model.activeTag = active ? nil : tag.name
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+        }
+        .padding(.bottom, 7)
+    }
+
+    private func tagChip(_ label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(active
+                        ? Color.accentColor.opacity(0.18)
+                        : Color(nsColor: .quaternaryLabelColor).opacity(0.35))
+                )
+                .foregroundStyle(active ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - 列表
 
     private var notesList: some View {
         List(selection: $model.sidebarSelection) {
-            vaultRow
-            ForEach(model.tree) { node in
-                NodeRow(node: node)
+            if let tag = model.activeTag {
+                Section("标签 #\(tag)") {
+                    ForEach(model.taggedNotes) { note in
+                        Label(note.title, systemImage: note.isPlainText ? "doc.plaintext" : "doc.richtext")
+                            .tag(note.url)
+                    }
+                }
+            } else {
+                vaultRow
+                ForEach(model.visibleNodes) { item in
+                    NodeRow(node: item.node, depth: item.depth)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -393,38 +441,52 @@ enum VaultDrag {
 
 struct NodeRow: View {
     let node: VaultNode
+    var depth: Int = 0
     @EnvironmentObject private var model: AppModel
+
+    private var indent: CGFloat { CGFloat(depth) * 14 }
 
     private var isExpanded: Binding<Bool> {
         Binding(
-            get: { !model.collapsedFolders.contains(node.url) },
+            get: {
+                !model.collapsedFolders.contains { $0.standardizedFileURL.path == node.url.standardizedFileURL.path }
+            },
             set: { expanded in
-                if expanded {
-                    model.collapsedFolders.remove(node.url)
-                } else {
-                    model.collapsedFolders.insert(node.url)
+                model.collapsedFolders = model.collapsedFolders.filter {
+                    $0.standardizedFileURL.path != node.url.standardizedFileURL.path
                 }
+                if !expanded { model.collapsedFolders.insert(node.url) }
             }
         )
     }
 
     var body: some View {
         if node.isDirectory {
-            DisclosureGroup(isExpanded: isExpanded) {
-                ForEach(node.children ?? []) { child in
-                    NodeRow(node: child)
-                }
-            } label: {
-                folderLabel
-            }
-            .tag(node.url)
+            folderLabel
+                .padding(.leading, indent)
+                .tag(node.url)
         } else {
             noteLabel
+                .padding(.leading, indent)
+                .tag(node.url)
         }
     }
 
     private var folderLabel: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
+            Button {
+                isExpanded.wrappedValue.toggle()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
+                    .frame(width: 12, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded.wrappedValue ? "折叠" : "展开")
+
             Image(systemName: "folder")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -432,15 +494,14 @@ struct NodeRow: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
+        .frame(minHeight: 20)
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
-            let expanded = !isExpanded.wrappedValue
             let modifiers = NSApp.currentEvent?.modifierFlags ?? []
             if modifiers.intersection([.command, .shift]).isEmpty {
                 model.sidebarSelection = [node.url]
             }
-            isExpanded.wrappedValue = expanded
         })
         .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { folderMenu }
@@ -464,11 +525,27 @@ struct NodeRow: View {
                 .foregroundStyle(.secondary)
             Text(node.title)
                 .lineLimit(1)
+
+            if node.isImage {
+                Spacer(minLength: 4)
+                Circle()
+                    .fill(model.referencedImageNames.contains(node.name)
+                          ? Color.green.opacity(0.8)
+                          : Color.secondary.opacity(0.25))
+                    .frame(width: 6, height: 6)
+                    .help(model.referencedImageNames.contains(node.name) ? "有文档引用" : "没有文档引用")
+            }
         }
         .padding(.vertical, 1)
         .tag(node.url)
         .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { model.openNote(node.url) })
+        .simultaneousGesture(TapGesture().onEnded {
+            if node.isImage {
+                model.sidebarSelection = [node.url]
+            } else {
+                model.openNote(node.url)
+            }
+        })
         .onDrag { VaultDrag.provider(for: node.url, selection: model.sidebarSelection) }
         .contextMenu { node.isImage ? AnyView(attachmentMenu) : AnyView(noteMenu) }
     }
@@ -480,6 +557,7 @@ struct NodeRow: View {
         Button("新建文件夹") { model.createFolder(in: node.url) }
         Divider()
         Button("重命名…") { model.beginRename(node.url) }
+            .disabled(!AppModel.canRename(node.url))
         Button("在 Finder 中显示") { model.revealInFinder(node.url) }
         Divider()
         Button("移到废纸篓", role: .destructive) { model.trashItem(node.url) }
@@ -520,6 +598,9 @@ struct NodeRow: View {
         Button("新建文件夹（同级）") { model.createFolder(in: node.url.deletingLastPathComponent()) }
         Divider()
         Button("在 Finder 中显示") { model.revealInFinder(node.url) }
+        if node.isNote {
+            Button("查看历史…") { model.openHistory(for: node.url) }
+        }
         Button("重命名…") { model.beginRename(node.url) }
         Menu("移动到") {
             ForEach(model.allFolders) { folder in
@@ -565,6 +646,31 @@ struct DetailView: View {
             }
         }
         .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $model.showConflicts) {
+            ConflictView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showHistory) {
+            HistoryView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showQuickSwitcher) {
+            QuickSwitcherView()
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showBrokenLinks) {
+            BrokenLinksView()
+                .environmentObject(model)
+        }
+        .alert(
+            "整理附件",
+            isPresented: $model.pendingConsolidation
+        ) {
+            Button("开始整理") { model.consolidateAttachments() }
+            Button("取消", role: .cancel) { model.pendingConsolidation = false }
+        } message: {
+            Text("会把各文件夹 assets/ 里的文件移动到笔记库根目录的 assets/，并改写笔记中的引用路径。操作会修改多个文件。")
+        }
         .alert(
             "图片正被引用",
             isPresented: Binding(
@@ -644,17 +750,42 @@ struct EditorPane: View {
             StatusBar()
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.currentNote?.title ?? "TongMD")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    if !model.branch.isEmpty {
+                        Text(model.branch)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("模式", selection: $model.mode) {
                     ForEach(EditorMode.allCases) { mode in
-                        Image(systemName: mode.symbol)
-                            .help(mode.label)
+                        Text(mode.label)
                             .tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 132)
+                .frame(width: 168)
                 .labelsHidden()
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.showOutline.toggle()
+                } label: {
+                    Image(systemName: "list.bullet.indent")
+                }
+                .help("大纲")
+                .popover(isPresented: $model.showOutline, arrowEdge: .bottom) {
+                    OutlineView()
+                        .environmentObject(model)
+                }
+                .disabled(model.selection == nil)
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.pendingChanges > 0 {
@@ -683,8 +814,7 @@ struct EditorPane: View {
                 .help("设置 ⌘,")
             }
         }
-        .navigationTitle(model.currentNote?.title ?? "TongMD")
-        .navigationSubtitle(model.branch.isEmpty ? "" : model.branch)
+        .navigationTitle("")
     }
 
     /// 谁引用了当前这篇（双链的反向索引）
@@ -692,28 +822,58 @@ struct EditorPane: View {
     private var backlinksBar: some View {
         if !model.backlinks.isEmpty {
             Divider()
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.turn.down.right")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                Text("被 \(model.backlinks.count) 篇引用")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                ForEach(model.backlinks.prefix(8)) { note in
-                    Button(note.title) {
-                        model.openNote(note.url)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text("被 \(model.backlinks.count) 篇引用")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if model.backlinks.count > 3 {
+                        Menu("全部") {
+                            ForEach(model.backlinks) { link in
+                                Button(link.note.title) { jump(to: link) }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .font(.caption2)
                     }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .lineLimit(1)
                 }
-                Spacer(minLength: 0)
+
+                ForEach(model.backlinks.prefix(3)) { link in
+                    Button {
+                        jump(to: link)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(link.note.title)
+                                .font(.caption)
+                                .foregroundStyle(Color.accentColor)
+                                .lineLimit(1)
+                            Text(link.excerpt)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(link.excerpt)
+                }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+            .padding(.vertical, 5)
             .background(.bar)
         }
+    }
+
+    private func jump(to link: Backlink) {
+        model.openNote(link.note.url)
+        model.pendingScrollRange = NSRange(location: link.offset, length: 0)
     }
 
     @ViewBuilder
@@ -726,6 +886,8 @@ struct EditorPane: View {
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
+                vaultURL: model.vaultURL,
+                noteTitles: model.notes.map(\.title),
                 scrollTarget: model.pendingScrollRange,
                 onScrollHandled: { model.pendingScrollRange = nil }
             )
@@ -735,7 +897,9 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
-                onWikiLink: { model.openWikiLink($0) }
+                onWikiLink: { model.openWikiLink($0) },
+                onToggleTask: { line, checked in model.toggleTask(line: line, checked: checked) },
+                onCopyCode: { model.copyCode($0) }
             )
         case .split:
             HSplitView {
@@ -745,6 +909,8 @@ struct EditorPane: View {
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
+                vaultURL: model.vaultURL,
+                noteTitles: model.notes.map(\.title),
                 scrollTarget: model.pendingScrollRange,
                 onScrollHandled: { model.pendingScrollRange = nil }
             )
@@ -754,7 +920,9 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
-                onWikiLink: { model.openWikiLink($0) }
+                onWikiLink: { model.openWikiLink($0) },
+                onToggleTask: { line, checked in model.toggleTask(line: line, checked: checked) },
+                onCopyCode: { model.copyCode($0) }
             )
                     .frame(minWidth: 300)
             }

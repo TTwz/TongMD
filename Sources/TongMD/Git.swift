@@ -34,6 +34,8 @@ struct GitResult: Sendable {
 struct SyncOutcome: Sendable {
     let branch: String
     let summary: String
+    /// 冲突文件的仓库相对路径
+    var conflicts: [String] = []
 }
 
 struct CommitOutcome: Sendable {
@@ -48,6 +50,46 @@ struct GitEngine: Sendable {
     static let gitPath = "/usr/bin/git"
 
     // MARK: - 对外操作
+
+    /// 仓库根目录（笔记库可能是仓库的子目录）
+    func repoRoot(_ dir: URL) -> URL? {
+        guard let result = try? run(["rev-parse", "--show-toplevel"], in: dir), result.ok else {
+            return nil
+        }
+        let path = result.output.trimmed
+        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+    }
+
+    /// 某个文件的提交历史（新版在前）
+    func fileLog(_ relativePath: String, in dir: URL, limit: Int = 60) -> [FileVersion] {
+        guard let result = try? run(
+            ["log", "--follow", "--date=iso-strict", "--format=%H%x09%ad%x09%s", "-n", "\(limit)", "--", relativePath],
+            in: dir
+        ), result.ok else { return [] }
+
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime]
+
+        return result.output.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+            let date = parser.date(from: String(parts[1])) ?? Date()
+            return FileVersion(id: String(parts[0]), date: date, message: String(parts[2]))
+        }
+    }
+
+    /// 某个文件在指定提交里的内容
+    func fileContent(_ relativePath: String, at hash: String, in dir: URL) throws -> String {
+        let result = try run(["show", "\(hash):\(relativePath)"], in: dir)
+        guard result.ok else { throw GitError.command(Self.friendlyMessage(for: result)) }
+        return result.output
+    }
+
+    /// 用历史版本覆盖工作区文件（不提交，交给后续自动提交）
+    func restoreFile(_ relativePath: String, from hash: String, in dir: URL) throws {
+        let result = try run(["checkout", hash, "--", relativePath], in: dir)
+        guard result.ok else { throw GitError.command(Self.friendlyMessage(for: result)) }
+    }
 
     func isRepository(_ dir: URL) -> Bool {
         if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git").path) { return true }
@@ -118,8 +160,17 @@ struct GitEngine: Sendable {
         if !pull.ok {
             // 冲突时不要留一个半截的 rebase 状态：回退到本地，让用户手动处理
             if isRebaseInProgress(dir) {
+                let unmerged = (try? run(["diff", "--name-only", "--diff-filter=U"], in: dir))?
+                    .output
+                    .split(separator: "\n")
+                    .map(String.init) ?? []
                 _ = try? run(["rebase", "--abort"], in: dir)
-                notes.append("远端有冲突，已保留本地版本，请手动合并后再同步")
+                notes.append("远端有冲突，已保留本地版本")
+                return SyncOutcome(
+                    branch: branch,
+                    summary: notes.joined(separator: " · "),
+                    conflicts: unmerged
+                )
             } else {
                 notes.append("拉取未完成：\(Self.friendlyMessage(for: pull))")
             }
@@ -138,6 +189,13 @@ struct GitEngine: Sendable {
 
         let summary = notes.isEmpty ? "已是最新" : notes.joined(separator: " · ")
         return SyncOutcome(branch: branch, summary: summary)
+    }
+
+    /// 远端某个文件的当前内容（用于冲突对比）
+    func remoteFileContent(_ relativePath: String, branch: String, in dir: URL) -> String? {
+        guard let result = try? run(["show", "origin/\(branch):\(relativePath)"], in: dir),
+              result.ok else { return nil }
+        return result.output
     }
 
     func isRebaseInProgress(_ dir: URL) -> Bool {
@@ -193,7 +251,7 @@ struct GitEngine: Sendable {
             argv += Self.networkArguments(token: token)
         }
         argv += args
-        return try Self.exec(argv, cwd: dir)
+        return try Self.exec(argv, cwd: dir, timeout: network ? 45 : 20)
     }
 
     static func authArguments(token: String) -> [String] {
@@ -293,7 +351,14 @@ struct GitEngine: Sendable {
         return raw
     }
 
-    static func exec(_ argv: [String], cwd: URL) throws -> GitResult {
+    /// git 子进程串行执行：并发 spawn 时管道 fd 可能互相牵连，
+    /// 而且多个 git 同时写 index.lock 也会互相等待。
+    private static let execLock = NSLock()
+
+    static func exec(_ argv: [String], cwd: URL, timeout: TimeInterval = 20) throws -> GitResult {
+        execLock.lock()
+        defer { execLock.unlock() }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
@@ -305,41 +370,62 @@ struct GitEngine: Sendable {
         environment["GIT_PAGER"] = "cat"
         environment["LC_ALL"] = "en_US.UTF-8"
         process.environment = environment
+        process.standardInput = FileHandle.nullDevice
 
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
+        // 不用 Pipe：并发 spawn 时管道写端可能被子进程继承，
+        // readDataToEndOfFile 会永远等不到 EOF。用临时文件最稳。
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tongmd-git-\(UUID().uuidString).out")
+        let errorURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tongmd-git-\(UUID().uuidString).err")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+
+        guard let outputHandle = try? FileHandle(forWritingTo: outputURL),
+              let errorHandle = try? FileHandle(forWritingTo: errorURL) else {
+            throw GitError.launch("无法创建临时输出文件")
+        }
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
 
         do {
             try process.run()
         } catch {
+            try? outputHandle.close()
+            try? errorHandle.close()
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
             throw GitError.launch(error.localizedDescription)
         }
 
-        // 两个管道必须并发读，否则大输出会把子进程堵死
-        let outBox = DataBox()
-        let errBox = DataBox()
-        let group = DispatchGroup()
-
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            outBox.set(outPipe.fileHandleForReading.readDataToEndOfFile())
-            group.leave()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            usleep(20_000)
         }
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            errBox.set(errPipe.fileHandleForReading.readDataToEndOfFile())
-            group.leave()
+        let timedOut = process.isRunning
+        if timedOut {
+            process.terminate()
+            usleep(200_000)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
-
-        group.wait()
         process.waitUntilExit()
+
+        try? outputHandle.close()
+        try? errorHandle.close()
+
+        let output = (try? Data(contentsOf: outputURL)) ?? Data()
+        let error = (try? Data(contentsOf: errorURL)) ?? Data()
+        try? FileManager.default.removeItem(at: outputURL)
+        try? FileManager.default.removeItem(at: errorURL)
+
+        if timedOut {
+            return GitResult(code: 124, output: "", error: "git 执行超时（超过 \(Int(timeout)) 秒）")
+        }
 
         return GitResult(
             code: process.terminationStatus,
-            output: String(decoding: outBox.value, as: UTF8.self),
-            error: String(decoding: errBox.value, as: UTF8.self)
+            output: String(decoding: output, as: UTF8.self),
+            error: String(decoding: error, as: UTF8.self)
         )
     }
 

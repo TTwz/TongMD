@@ -25,7 +25,34 @@ enum Markdown {
         <html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>:root { --base: \(Int(fontSize.rounded()))px }\(css)</style></head>
-        <body>\(body)</body></html>
+        <body>\(body)</body>
+        <script>
+        document.addEventListener('click', function (event) {
+            var button = event.target && event.target.closest ? event.target.closest('.copy') : null;
+            if (!button) { return; }
+            var block = button.closest('.code-block');
+            var code = block ? block.querySelector('pre code') : null;
+            if (!code) { return; }
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tongmd) {
+                window.webkit.messageHandlers.tongmd.postMessage({ type: 'copyCode', text: code.innerText });
+            }
+            button.textContent = '已复制';
+            setTimeout(function () { button.textContent = '复制'; }, 1200);
+        });
+
+        document.addEventListener('change', function (event) {
+            var target = event.target;
+            if (!target || !target.matches || !target.matches('input[data-task]')) { return; }
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tongmd) {
+                window.webkit.messageHandlers.tongmd.postMessage({
+                    type: 'toggleTask',
+                    line: parseInt(target.dataset.line, 10),
+                    checked: target.checked
+                });
+            }
+        });
+        </script>
+        </html>
         """
     }
 
@@ -42,6 +69,7 @@ enum Markdown {
         var out: [String] = []
         var paragraph: [String] = []
         var listTag: String?
+        var footnotes: [(id: String, text: String)] = []
 
         func flushParagraph() {
             guard !paragraph.isEmpty else { return }
@@ -73,7 +101,11 @@ enum Markdown {
                 }
                 i += 1
                 let cls = lang.isEmpty ? "" : #" class="language-\#(escape(lang))""#
-                out.append("<pre><code\(cls)>\(escape(code.joined(separator: "\n")))</code></pre>")
+                let highlighted = highlightedCode(code.joined(separator: "\n"), language: lang)
+                out.append(
+                    "<div class=\"code-block\"><button class=\"copy\" type=\"button\">复制</button>" +
+                    "<pre><code\(cls)>\(highlighted)</code></pre></div>"
+                )
                 continue
             }
 
@@ -115,6 +147,47 @@ enum Markdown {
                 continue
             }
 
+            if let definition = footnoteDefinition(line) {
+                flushParagraph()
+                closeList()
+                footnotes.append(definition)
+                i += 1
+                continue
+            }
+
+            // 表格：当前行含 |，下一行是分隔行
+            if line.contains("|"), i + 1 < lines.count, isTableSeparator(lines[i + 1]) {
+                flushParagraph()
+                closeList()
+
+                let header = tableCells(line)
+                let alignments = tableAlignments(lines[i + 1], columns: header.count)
+                var rows: [[String]] = []
+                var j = i + 2
+                while j < lines.count {
+                    let candidate = lines[j].trimmingCharacters(in: .whitespaces)
+                    guard !candidate.isEmpty, candidate.contains("|") else { break }
+                    rows.append(tableCells(candidate))
+                    j += 1
+                }
+
+                func style(_ index: Int) -> String {
+                    guard index < alignments.count, let align = alignments[index] else { return "" }
+                    return #" style="text-align:\#(align)""#
+                }
+
+                var table = "<table><thead><tr>"
+                table += header.enumerated().map { "<th\(style($0.offset))>" + inline($0.element) + "</th>" }.joined()
+                table += "</tr></thead><tbody>"
+                for row in rows {
+                    table += "<tr>" + row.enumerated().map { "<td\(style($0.offset))>" + inline($0.element) + "</td>" }.joined() + "</tr>"
+                }
+                table += "</tbody></table>"
+                out.append(table)
+                i = j
+                continue
+            }
+
             if let item = listItem(line) {
                 flushParagraph()
                 if listTag != item.tag {
@@ -122,7 +195,16 @@ enum Markdown {
                     out.append("<\(item.tag)>")
                     listTag = item.tag
                 }
-                out.append("<li>" + inline(item.text) + "</li>")
+
+                if let task = taskItem(item.text) {
+                    out.append(
+                        "<li class=\"task\"><input type=\"checkbox\" data-task=\"1\" " +
+                        "data-line=\"\(i)\"\(task.checked ? " checked" : "")> " +
+                        inline(task.text) + "</li>"
+                    )
+                } else {
+                    out.append("<li>" + inline(item.text) + "</li>")
+                }
                 i += 1
                 continue
             }
@@ -133,6 +215,18 @@ enum Markdown {
 
         flushParagraph()
         closeList()
+
+        if !footnotes.isEmpty {
+            var section = "<section class=\"footnotes\"><hr><ol>"
+            for note in footnotes {
+                let id = escape(note.id)
+                section += "<li id=\"fn-\(id)\">" + inline(note.text)
+                section += " <a href=\"#fnref-\(id)\">↩</a></li>"
+            }
+            section += "</ol></section>"
+            out.append(section)
+        }
+
         return out.joined(separator: "\n")
     }
 
@@ -223,6 +317,83 @@ enum Markdown {
         return nil
     }
 
+    static func taskItem(_ text: String) -> (checked: Bool, text: String)? {
+        guard text.count >= 4 else { return nil }
+        let prefix = text.prefix(4)
+        guard prefix.hasPrefix("["), prefix.hasSuffix("] ") else { return nil }
+        let mark = prefix.dropFirst().first
+        guard mark == " " || mark == "x" || mark == "X" else { return nil }
+        return (mark == "x" || mark == "X", String(text.dropFirst(4)))
+    }
+
+    /// 把任务行的 [ ] / [x] 改成指定状态；不是任务行返回 nil
+    static func toggledTaskLine(_ line: String, checked: Bool) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]"#
+        ) else { return nil }
+        let ns = line as NSString
+        guard let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        let replacement = ns.substring(with: match.range(at: 1)) + (checked ? "[x]" : "[ ]")
+        return ns.replacingCharacters(in: match.range, with: replacement)
+    }
+
+    static func footnoteDefinition(_ line: String) -> (id: String, text: String)? {
+        guard let regex = try? NSRegularExpression(pattern: #"^\[\^([^\]\n]+)\]:\s*(.*)$"#) else { return nil }
+        let ns = line as NSString
+        guard let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else {
+            return nil
+        }
+        return (ns.substring(with: match.range(at: 1)), ns.substring(with: match.range(at: 2)))
+    }
+
+    static func tableAlignments(_ line: String, columns: Int) -> [String?] {
+        let cells = tableCells(line)
+        return (0..<columns).map { index in
+            guard index < cells.count else { return nil }
+            let cell = cells[index].trimmingCharacters(in: .whitespaces)
+            let left = cell.hasPrefix(":")
+            let right = cell.hasSuffix(":")
+            if left && right { return "center" }
+            if right { return "right" }
+            if left { return "left" }
+            return nil
+        }
+    }
+
+    static func isTableSeparator(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("|"), trimmed.contains("-") else { return false }
+        let allowed = CharacterSet(charactersIn: "|:- \t")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    static func tableCells(_ line: String) -> [String] {
+        var trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("|") { trimmed.removeFirst() }
+        if trimmed.hasSuffix("|"), !trimmed.hasSuffix("\\|") { trimmed.removeLast() }
+
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for character in trimmed {
+            if escaped {
+                current.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
     // MARK: - 行内
 
     static func inline(_ raw: String) -> String {
@@ -235,7 +406,8 @@ enum Markdown {
             let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
             for (index, match) in matches.enumerated().reversed() {
                 let code = ns.substring(with: match.range(at: 1))
-                codes.insert("<code>\(code)</code>", at: index)
+                // 反向遍历，必须插到 0：否则 index 会超过数组当前长度
+                codes.insert("<code>\(code)</code>", at: 0)
                 text = (text as NSString).replacingCharacters(in: match.range, with: "\u{1}\(index)\u{1}")
             }
         }
@@ -248,6 +420,12 @@ enum Markdown {
         text = sub(#"__([^_\n]+)__"#, #"<strong>$1</strong>"#, text)
         text = sub(#"\*([^*\n]+)\*"#, #"<em>$1</em>"#, text)
         text = sub(#"~~([^~\n]+)~~"#, #"<del>$1</del>"#, text)
+        text = sub(#"==([^=\n]+)=="#, #"<mark>$1</mark>"#, text)
+        text = sub(
+            #"\[\^([^\]\n]+)\]"#,
+            "<sup class=\"fn\" id=\"fnref-$1\"><a href=\"#fn-$1\">$1</a></sup>",
+            text
+        )
 
         for (index, html) in codes.enumerated() {
             text = text.replacingOccurrences(of: "\u{1}\(index)\u{1}", with: html)
@@ -287,6 +465,132 @@ enum Markdown {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return input }
         let range = NSRange(input.startIndex..<input.endIndex, in: input)
         return re.stringByReplacingMatches(in: input, options: [], range: range, withTemplate: template)
+    }
+
+
+    // MARK: - 代码块高亮
+
+    private struct CodeSpec {
+        let comment: String?
+        let keywords: [String]
+    }
+
+    private static let codeSpecs: [String: CodeSpec] = [
+        "swift": CodeSpec(
+            comment: #"//[^\n]*|/\*[\s\S]*?\*/"#,
+            keywords: ["func", "let", "var", "if", "else", "guard", "return", "struct", "class",
+                       "enum", "protocol", "extension", "import", "for", "in", "while", "switch",
+                       "case", "default", "try", "catch", "throw", "throws", "async", "await",
+                       "some", "any", "init", "deinit", "self", "super", "nil", "true", "false",
+                       "public", "private", "internal", "static", "final", "where", "as", "is"]
+        ),
+        "js": CodeSpec(
+            comment: #"//[^\n]*|/\*[\s\S]*?\*/"#,
+            keywords: ["const", "let", "var", "function", "return", "if", "else", "for", "while",
+                       "class", "new", "import", "export", "from", "await", "async", "try",
+                       "catch", "throw", "typeof", "instanceof", "null", "undefined", "true", "false"]
+        ),
+        "ts": CodeSpec(
+            comment: #"//[^\n]*|/\*[\s\S]*?\*/"#,
+            keywords: ["const", "let", "var", "function", "return", "if", "else", "for", "while",
+                       "class", "interface", "type", "enum", "import", "export", "from", "await",
+                       "async", "try", "catch", "throw", "null", "undefined", "true", "false"]
+        ),
+        "python": CodeSpec(
+            comment: #"#[^\n]*"#,
+            keywords: ["def", "class", "return", "if", "elif", "else", "for", "while", "in",
+                       "import", "from", "as", "try", "except", "finally", "raise", "with",
+                       "lambda", "yield", "async", "await", "None", "True", "False", "self"]
+        ),
+        "bash": CodeSpec(
+            comment: #"#[^\n]*"#,
+            keywords: ["if", "then", "else", "elif", "fi", "for", "do", "done", "while", "function",
+                       "return", "export", "local", "echo", "cd", "source"]
+        ),
+        "json": CodeSpec(
+            comment: nil,
+            keywords: ["true", "false", "null"]
+        ),
+        "java": CodeSpec(
+            comment: #"//[^\n]*|/\*[\s\S]*?\*/"#,
+            keywords: ["public", "private", "protected", "class", "interface", "enum", "record",
+                       "extends", "implements", "static", "final", "abstract", "void", "int",
+                       "long", "double", "float", "boolean", "char", "String", "var", "new",
+                       "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+                       "break", "continue", "try", "catch", "finally", "throw", "throws",
+                       "import", "package", "this", "super", "null", "true", "false",
+                       "instanceof", "synchronized", "volatile", "transient", "sealed", "permits"]
+        ),
+        "sql": CodeSpec(
+            comment: #"--[^\n]*|/\*[\s\S]*?\*/"#,
+            keywords: ["select", "from", "where", "insert", "into", "values", "update", "set",
+                       "delete", "create", "table", "alter", "drop", "index", "join", "left",
+                       "right", "inner", "outer", "on", "group", "by", "order", "having", "limit",
+                       "offset", "and", "or", "not", "null", "is", "in", "as", "distinct",
+                       "count", "sum", "avg", "min", "max", "union", "all", "case", "when",
+                       "then", "else", "end", "primary", "key", "foreign", "references",
+                       "default", "asc", "desc", "with", "exists", "between", "like"]
+        )
+    ]
+
+    /// 轻量代码高亮：只处理注释、字符串、数字、关键字；未知语言原样转义
+    static func highlightedCode(_ code: String, language: String) -> String {
+        let lang = language.lowercased()
+        let normalized: String
+        switch lang {
+        case "javascript": normalized = "js"
+        case "typescript": normalized = "ts"
+        case "py": normalized = "python"
+        case "sh", "zsh", "shell": normalized = "bash"
+        case "mysql", "postgres", "postgresql": normalized = "sql"
+        default: normalized = lang
+        }
+
+        guard let spec = codeSpecs[normalized] else { return escape(code) }
+
+        let stringPattern = #""(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'"#
+        let numberPattern = #"\b\d+(?:\.\d+)?\b"#
+        let keywordPattern = "\\b(?:" + spec.keywords.joined(separator: "|") + ")\\b"
+
+        var alternatives: [String] = []
+        alternatives.append(spec.comment.map { "(" + $0 + ")" } ?? "(?!)")
+        alternatives.append("(" + stringPattern + ")")
+        alternatives.append("(" + numberPattern + ")")
+        alternatives.append("(" + keywordPattern + ")")
+
+        guard let regex = try? NSRegularExpression(
+            pattern: alternatives.joined(separator: "|"),
+            options: [.anchorsMatchLines, .caseInsensitive]
+        ) else { return escape(code) }
+
+        let ns = code as NSString
+        var output = ""
+        var last = 0
+
+        for match in regex.matches(in: code, range: NSRange(location: 0, length: ns.length)) {
+            if match.range.location > last {
+                output += escape(ns.substring(with: NSRange(location: last, length: match.range.location - last)))
+            }
+
+            let token = escape(ns.substring(with: match.range))
+            let kind: String
+            if match.range(at: 1).location != NSNotFound {
+                kind = "com"
+            } else if match.range(at: 2).location != NSNotFound {
+                kind = "str"
+            } else if match.range(at: 3).location != NSNotFound {
+                kind = "num"
+            } else {
+                kind = "kw"
+            }
+            output += "<span class=\"tok-\(kind)\">\(token)</span>"
+            last = NSMaxRange(match.range)
+        }
+
+        if last < ns.length {
+            output += escape(ns.substring(from: last))
+        }
+        return output
     }
 
     // MARK: - 本地图片内联
@@ -401,6 +705,19 @@ enum Markdown {
         line-height: 1.55;
     }
     pre code { background: none; padding: 0; font-size: 0.86em; }
+    .code-block { position: relative; }
+    .code-block .copy {
+        position: absolute; top: 8px; right: 8px;
+        font-size: 11px; line-height: 1; padding: 4px 8px;
+        border-radius: 6px; border: 1px solid rgba(0,0,0,0.12);
+        background: rgba(255,255,255,0.92); color: #555;
+        opacity: 0; transition: opacity 0.12s ease; cursor: pointer;
+    }
+    .code-block:hover .copy { opacity: 1; }
+    .code-block .copy:active { transform: scale(0.97); }
+    @media (prefers-color-scheme: dark) {
+        .code-block .copy { background: rgba(44,44,46,0.92); color: #ddd; border-color: rgba(255,255,255,0.15); }
+    }
     pre.plain {
         background: transparent; padding: 0; border-radius: 0;
         font: 0.92em/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -418,5 +735,26 @@ enum Markdown {
     .wiki { color: #8b5cf6; border-bottom: 1px dashed currentColor; cursor: pointer; text-decoration: none; }
     .wiki:hover { color: #7c3aed; }
     del { color: #8e8e93; }
+    mark { background: #fff3a3; color: inherit; padding: 0 2px; border-radius: 2px; }
+    .tok-kw { color: #9b2393; }
+    .tok-str { color: #c41a16; }
+    .tok-com { color: #6c7986; font-style: italic; }
+    .tok-num { color: #1c00cf; }
+    @media (prefers-color-scheme: dark) {
+        mark { background: #665c00; }
+        .tok-kw { color: #fc5fa3; }
+        .tok-str { color: #fc6a5d; }
+        .tok-com { color: #7f8c98; }
+        .tok-num { color: #d0bf69; }
+    }
+    table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.95em; }
+    th, td { border: 1px solid #e0e0e4; padding: 7px 10px; text-align: left; vertical-align: top; }
+    th { background: #f6f6f8; font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+        th, td { border-color: #3a3a3c; }
+        th { background: #2c2c2e; }
+    }
+    li.task { list-style: none; margin-left: -1.3em; }
+    li.task input[type="checkbox"] { margin-right: 6px; transform: translateY(1px); }
     """
 }

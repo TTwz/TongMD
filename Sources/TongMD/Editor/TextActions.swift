@@ -59,6 +59,46 @@ enum TextActions {
         textView.setSelectedRange(NSRange(location: urlStart, length: 8))
     }
 
+    static func toggleStrikethrough(_ textView: NSTextView) {
+        toggleWrap(textView, marker: "~~", placeholder: "删除线")
+    }
+
+    static func toggleHighlight(_ textView: NSTextView) {
+        toggleWrap(textView, marker: "==", placeholder: "高亮")
+    }
+
+    static func toggleNumberedList(_ textView: NSTextView) {
+        togglePrefix(textView, prefix: "1. ", pattern: #"^\s*\d+[.)]\s+"#)
+    }
+
+    static func toggleTaskList(_ textView: NSTextView) {
+        togglePrefix(textView, prefix: "- [ ] ", pattern: #"^\s*[-*+]\s+\[[ xX]\]\s+"#)
+    }
+
+    static func insertTable(_ textView: NSTextView) {
+        let table = "| 列 1 | 列 2 |\n| --- | --- |\n|  |  |\n"
+        let selection = textView.selectedRange()
+        textView.insertText(table, replacementRange: selection)
+        // 选中第一列表头，直接输入就能替换
+        textView.setSelectedRange(NSRange(location: selection.location + 2, length: 3))
+    }
+
+    static func insertHorizontalRule(_ textView: NSTextView) {
+        let selection = textView.selectedRange()
+        textView.insertText("\n\n---\n\n", replacementRange: selection)
+        textView.setSelectedRange(NSRange(location: selection.location + 6, length: 0))
+    }
+
+    static func insertCodeBlock(_ textView: NSTextView, language: String) {
+        let ns = textView.string as NSString
+        let selection = textView.selectedRange()
+        let selected = selection.length > 0 ? ns.substring(with: selection) : ""
+        let insert = "```\(language)\n\(selected)\n```"
+        textView.insertText(insert, replacementRange: selection)
+        let contentStart = selection.location + 3 + language.count + 1
+        textView.setSelectedRange(NSRange(location: contentStart, length: (selected as NSString).length))
+    }
+
     static func toggleCodeBlock(_ textView: NSTextView) {
         let ns = textView.string as NSString
         let selection = textView.selectedRange()

@@ -7,8 +7,12 @@ final class MarkdownTextView: NSTextView {
     var highlighter: MarkdownSyntaxHighlighter?
     /// .txt：禁用 Markdown 编辑动作（智能续行、插入标记）
     var isPlainText = false
-    /// 当前笔记所在目录：粘贴进来的图片会存到它的 assets/ 下
+    /// 当前笔记所在目录：用于计算相对路径
     var attachmentDirectory: URL?
+    /// 笔记库根目录：附件统一存到它下面的 assets/
+    var attachmentRoot: URL?
+    /// 用于 [[ 补全的笔记标题
+    var noteTitles: [String] = []
 
     // 纯文本 NSTextView 默认不接受图片，系统会在调用 paste: 前禁用菜单和 ⌘V。
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
@@ -61,7 +65,9 @@ final class MarkdownTextView: NSTextView {
     }
 
     private func insertImage(_ data: Data, name: String, ext: String, into directory: URL) -> Bool {
-        guard let relative = AttachmentStore.save(data: data, name: name, ext: ext, into: directory) else {
+        // 统一放到笔记库根的 assets/；没有根目录时退回笔记旁的 assets/
+        let base = attachmentRoot ?? directory
+        guard let fileURL = AttachmentStore.save(data: data, name: name, ext: ext, into: base) else {
             reportPasteFailure(NSError(
                 domain: "TongMD", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "assets 目录不可写"]
@@ -69,7 +75,8 @@ final class MarkdownTextView: NSTextView {
             return false
         }
 
-        let markup = isPlainText ? relative : "![\(AttachmentStore.sanitize(name))](\(relative))"
+        let link = AttachmentStore.relativePath(from: directory, to: fileURL)
+        let markup = isPlainText ? link : "![\(AttachmentStore.sanitize(name))](\(link))"
         insertText(markup, replacementRange: selectedRange())
         return true
     }
@@ -93,6 +100,84 @@ final class MarkdownTextView: NSTextView {
         while result.contains("--") { result = result.replacingOccurrences(of: "--", with: "-") }
         result = result.trimmingCharacters(in: CharacterSet(charactersIn: "- "))
         return result.isEmpty ? "image" : result
+    }
+
+    func currentLinkSuggestion() -> LinkCompletion.Suggestion? {
+        LinkCompletion.suggestion(
+            text: string,
+            caret: selectedRange().location,
+            titles: noteTitles
+        )
+    }
+
+    private lazy var linkCompletion = LinkCompletionController()
+
+    private func refreshLinkCompletion() {
+        guard !hasMarkedText(), let suggestion = currentLinkSuggestion() else {
+            linkCompletion.hide()
+            return
+        }
+
+        linkCompletion.onCommit = { [weak self] title in
+            guard let self, let current = self.currentLinkSuggestion() else { return }
+            self.insertText(title + "]]", replacementRange: current.range)
+            self.linkCompletion.hide()
+        }
+
+        let caret = selectedRange().location
+        let rect = firstRect(
+            forCharacterRange: NSRange(location: caret, length: 0),
+            actualRange: nil
+        )
+        linkCompletion.show(
+            items: suggestion.items,
+            at: NSPoint(x: rect.minX, y: rect.minY)
+        )
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        refreshLinkCompletion()
+    }
+
+    #if DEBUG
+    var debugCompletionVisible: Bool { linkCompletion.isVisible }
+    var debugCompletionCount: Int { linkCompletion.itemCount }
+    func debugHideCompletion() { linkCompletion.hide() }
+    #endif
+
+    /// 光标移动时由 delegate 调用，用来隐藏或刷新补全浮层
+    func linkCompletionDidMoveCaret() {
+        refreshLinkCompletion()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if linkCompletion.isVisible {
+            switch event.keyCode {
+            case 53:   // Esc
+                linkCompletion.hide()
+                return
+            case 125:  // ↓
+                linkCompletion.moveSelection(by: 1)
+                return
+            case 126:  // ↑
+                linkCompletion.moveSelection(by: -1)
+                return
+            case 36, 48: // Return / Tab
+                if linkCompletion.commitSelected() { return }
+            default:
+                break
+            }
+        }
+        super.keyDown(with: event)
+        if linkCompletion.isVisible, event.keyCode == 123 || event.keyCode == 124 {
+            refreshLinkCompletion()
+        }
+    }
+
+    override func resignFirstResponder() -> Bool {
+        linkCompletion.hide()
+        return super.resignFirstResponder()
     }
 
     override func insertNewline(_ sender: Any?) {
@@ -139,6 +224,56 @@ final class MarkdownTextView: NSTextView {
         TextActions.toggleCodeBlock(self)
     }
 
+    @objc func toggleStrikethrough(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.toggleStrikethrough(self)
+    }
+
+    @objc func toggleHighlight(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.toggleHighlight(self)
+    }
+
+    @objc func insertTable(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertTable(self)
+    }
+
+    @objc func insertHorizontalRule(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertHorizontalRule(self)
+    }
+
+    @objc func insertSwiftCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "swift")
+    }
+
+    @objc func insertPythonCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "python")
+    }
+
+    @objc func insertJavaScriptCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "js")
+    }
+
+    @objc func insertBashCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "bash")
+    }
+
+    @objc func insertJavaCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "java")
+    }
+
+    @objc func insertSQLCodeBlock(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.insertCodeBlock(self, language: "sql")
+    }
+
     // MARK: - 行前缀
 
     @objc func toggleHeading1(_ sender: Any?) {
@@ -165,6 +300,16 @@ final class MarkdownTextView: NSTextView {
     @objc func toggleBlockquote(_ sender: Any?) {
         guard allowsMarkdownFormatting else { return }
         TextActions.toggleBlockquote(self)
+    }
+
+    @objc func toggleNumberedList(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.toggleNumberedList(self)
+    }
+
+    @objc func toggleTaskList(_ sender: Any?) {
+        guard allowsMarkdownFormatting else { return }
+        TextActions.toggleTaskList(self)
     }
 
     // MARK: - 撤销支持
