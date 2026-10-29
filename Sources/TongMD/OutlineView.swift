@@ -51,7 +51,9 @@ struct OutlinePane: View {
     }
 
     private func row(_ item: OutlineItem) -> some View {
-        Button {
+        let isActive = model.activeOutlineOffset == item.offset
+
+        return Button {
             model.jumpToOutline(item)
         } label: {
             HStack(spacing: 4) {
@@ -60,14 +62,27 @@ struct OutlinePane: View {
                         .frame(width: CGFloat(item.level - 1) * 12)
                 }
                 Text(item.title)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: isActive ? .medium : .regular))
                     .lineLimit(1)
-                    .foregroundStyle(item.level == 1 ? .primary : .secondary)
+                    .foregroundStyle(isActive ? .primary : (item.level == 1 ? .primary : .secondary))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+                    .padding(.horizontal, 4)
+            )
+            .overlay(alignment: .leading) {
+                if isActive {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.accentColor)
+                        .frame(width: 2, height: 14)
+                        .padding(.leading, 2)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -96,6 +96,8 @@ final class AppModel: ObservableObject {
     }
     /// 预览里要滚动到的标题（点大纲时设置，滚完清空）
     @Published var pendingPreviewHeading: String?
+    /// 当前高亮的大纲标题（点击或光标移动时更新）
+    @Published var activeOutlineOffset: Int?
 
     var visibleNodes: [VisibleNode] {
         let collapsed = Set(collapsedFolders.map { $0.standardizedFileURL.path })
@@ -117,12 +119,26 @@ final class AppModel: ObservableObject {
 
     /// 点大纲条目：常规模式滚动编辑器，预览模式滚动 WebView
     func jumpToOutline(_ item: OutlineItem) {
+        activeOutlineOffset = item.offset
         pendingPreviewHeading = item.title
         if mode == .preview {
             pendingScrollRange = nil
         } else {
             pendingScrollRange = NSRange(location: item.offset, length: 0)
         }
+    }
+
+    /// 光标移动时，把高亮切到它前面最近的那个标题
+    func updateActiveOutline(for caret: Int) {
+        activeOutlineOffset = Self.nearestHeadingOffset(in: outline, caret: caret)
+    }
+
+    nonisolated static func nearestHeadingOffset(in items: [OutlineItem], caret: Int) -> Int? {
+        var result: Int?
+        for item in items where item.offset <= caret {
+            result = item.offset
+        }
+        return result
     }
 
     @Published var conflicts: [ConflictFile] = []
@@ -1491,6 +1507,7 @@ final class AppModel: ObservableObject {
             return
         }
         text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        activeOutlineOffset = nil
         isDirty = false
         loadedMTime = Self.modificationDate(of: url)
         contentCache[url] = (loadedMTime, text)

@@ -573,6 +573,12 @@ enum SelfTest {
             check("大纲层级", outlineItems.map(\.level) == [1, 2, 3])
             check("大纲标题", outlineItems.map(\.title) == ["一", "二", "三"])
             check("大纲偏移递增", outlineItems[0].offset < outlineItems[1].offset)
+            check("光标在开头高亮第一个标题",
+                  AppModel.nearestHeadingOffset(in: outlineItems, caret: 0) == outlineItems[0].offset)
+            check("光标在正文中仍是上一个标题",
+                  AppModel.nearestHeadingOffset(in: outlineItems, caret: outlineItems[1].offset - 1) == outlineItems[0].offset)
+            check("光标进入第二个标题后切过去",
+                  AppModel.nearestHeadingOffset(in: outlineItems, caret: outlineItems[1].offset + 2) == outlineItems[1].offset)
 
             let outlineVault = root.appendingPathComponent("outline-vault")
             try? FileManager.default.createDirectory(at: outlineVault, withIntermediateDirectories: true)
@@ -585,6 +591,7 @@ enum SelfTest {
                 outlineModel.mode = .split
                 outlineModel.jumpToOutline(items[1])
                 check("点大纲定位到标题偏移", outlineModel.pendingScrollRange?.location == items[1].offset)
+                check("点大纲后该项高亮", outlineModel.activeOutlineOffset == items[1].offset)
                 check("点大纲同时通知预览", outlineModel.pendingPreviewHeading == items[1].title)
 
                 outlineModel.mode = .preview

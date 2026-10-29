@@ -891,7 +891,8 @@ struct EditorPane: View {
                 vaultURL: model.vaultURL,
                 noteTitles: model.notes.map(\.title),
                 scrollTarget: model.pendingScrollRange,
-                onScrollHandled: { model.pendingScrollRange = nil }
+                onScrollHandled: { model.pendingScrollRange = nil },
+                onCaretMoved: { model.updateActiveOutline(for: $0) }
             )
         case .preview:
             MarkdownPreview(
@@ -916,7 +917,8 @@ struct EditorPane: View {
                 vaultURL: model.vaultURL,
                 noteTitles: model.notes.map(\.title),
                 scrollTarget: model.pendingScrollRange,
-                onScrollHandled: { model.pendingScrollRange = nil }
+                onScrollHandled: { model.pendingScrollRange = nil },
+                onCaretMoved: { model.updateActiveOutline(for: $0) }
             )
                     .frame(minWidth: 300)
                 MarkdownPreview(

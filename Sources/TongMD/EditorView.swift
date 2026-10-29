@@ -19,6 +19,8 @@ struct MarkdownEditor: NSViewRepresentable {
     /// 从搜索结果跳进来时要滚动并选中的位置
     var scrollTarget: NSRange? = nil
     var onScrollHandled: () -> Void = {}
+    /// 光标移动时回调（用于同步大纲高亮）
+    var onCaretMoved: (Int) -> Void = { _ in }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -144,12 +146,25 @@ struct MarkdownEditor: NSViewRepresentable {
                 location: location,
                 length: min(target.length, max(0, length - location))
             )
-            DispatchQueue.main.async {
-                textView.scrollRangeToVisible(safe)
+            onScrollHandled()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 textView.setSelectedRange(safe)
-                onScrollHandled()
+                textView.scrollRangeToVisible(safe)
+                Self.alignRangeToTop(safe, in: textView)
             }
         }
+    }
+
+    /// 把目标行滚到视口顶部。用 NSView.scroll(to:) 让 AppKit 处理翻转坐标，
+    /// 自己算 clip bounds 在 flipped document 上会得到负数。
+    private static func alignRangeToTop(_ range: NSRange, in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: container)
+        let y = max(0, rect.minY + textView.textContainerInset.height - 12)
+        textView.scroll(NSPoint(x: 0, y: y))
     }
 
     func makeCoordinator() -> Coordinator {

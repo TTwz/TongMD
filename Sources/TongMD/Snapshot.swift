@@ -102,10 +102,13 @@ enum Snapshot {
         if ProcessInfo.processInfo.environment["TONGMD_OUTLINE"] == "1" {
             model.showOutline = true
         }
-
         if let title = ProcessInfo.processInfo.environment["TONGMD_OPEN"],
            let note = model.notes.first(where: { $0.title == title }) {
             model.openNote(note.url)
+        }
+
+        if ProcessInfo.processInfo.environment["TONGMD_JUMP"] == "1", model.outline.count > 1 {
+            model.jumpToOutline(model.outline[1])
         }
 
         if let mode = ProcessInfo.processInfo.environment["TONGMD_SELECT"] {
