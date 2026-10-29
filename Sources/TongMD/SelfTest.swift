@@ -574,6 +574,26 @@ enum SelfTest {
             check("大纲标题", outlineItems.map(\.title) == ["一", "二", "三"])
             check("大纲偏移递增", outlineItems[0].offset < outlineItems[1].offset)
 
+            let outlineVault = root.appendingPathComponent("outline-vault")
+            try? FileManager.default.createDirectory(at: outlineVault, withIntermediateDirectories: true)
+            let outlineNote = outlineVault.appendingPathComponent("o.md")
+            try "# 一\n\n## 二\n".write(to: outlineNote, atomically: true, encoding: .utf8)
+            let outlineModel = AppModel(temporaryVault: outlineVault)
+            outlineModel.openNote(outlineNote)
+            let items = outlineModel.outline
+            if items.count >= 2 {
+                outlineModel.mode = .split
+                outlineModel.jumpToOutline(items[1])
+                check("点大纲定位到标题偏移", outlineModel.pendingScrollRange?.location == items[1].offset)
+                check("点大纲同时通知预览", outlineModel.pendingPreviewHeading == items[1].title)
+
+                outlineModel.mode = .preview
+                outlineModel.jumpToOutline(items[1])
+                check("预览模式下只滚预览", outlineModel.pendingScrollRange == nil)
+            } else {
+                check("大纲条目至少两个", false)
+            }
+
             print("每日笔记与速记")
             let dailyVault = root.appendingPathComponent("daily-vault")
             try FileManager.default.createDirectory(at: dailyVault, withIntermediateDirectories: true)

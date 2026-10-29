@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
         static let noteTemplate = "noteTemplate"
         static let mode = "editorMode"
         static let fontSize = "editorFontSize"
+        static let showOutline = "showOutline"
     }
 
     private let defaults = UserDefaults.standard
@@ -90,7 +91,11 @@ final class AppModel: ObservableObject {
     @Published var showBrokenLinks = false
     @Published private(set) var tagCounts: [TagCount] = []
     @Published var activeTag: String?
-    @Published var showOutline = false
+    @Published var showOutline: Bool = false {
+        didSet { defaults.set(showOutline, forKey: Keys.showOutline) }
+    }
+    /// 预览里要滚动到的标题（点大纲时设置，滚完清空）
+    @Published var pendingPreviewHeading: String?
 
     var visibleNodes: [VisibleNode] {
         let collapsed = Set(collapsedFolders.map { $0.standardizedFileURL.path })
@@ -109,6 +114,16 @@ final class AppModel: ObservableObject {
     }
     private var pdfExporter: PDFExporter?
     var outline: [OutlineItem] { Outline.items(in: text) }
+
+    /// 点大纲条目：常规模式滚动编辑器，预览模式滚动 WebView
+    func jumpToOutline(_ item: OutlineItem) {
+        pendingPreviewHeading = item.title
+        if mode == .preview {
+            pendingScrollRange = nil
+        } else {
+            pendingScrollRange = NSRange(location: item.offset, length: 0)
+        }
+    }
 
     @Published var conflicts: [ConflictFile] = []
     @Published var showConflicts = false
@@ -263,6 +278,7 @@ final class AppModel: ObservableObject {
         noteTemplate = defaults.string(forKey: Keys.noteTemplate) ?? ""
         mode = EditorMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .split
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 15
+        showOutline = defaults.object(forKey: Keys.showOutline) as? Bool ?? false
         token = TokenStore.load()
 
         installClipboardShortcuts()

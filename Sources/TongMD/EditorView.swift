@@ -189,6 +189,9 @@ struct MarkdownPreview: NSViewRepresentable {
     let body: String
     var noteID: URL? = nil
     var fontSize: CGFloat = 16
+    /// 点大纲时滚动到对应标题
+    var scrollTargetHeading: String? = nil
+    var onScrollHandled: () -> Void = {}
     /// 预览里点了 [[双链]] 时回调给 AppModel
     var onWikiLink: ((String) -> Void)? = nil
     /// 预览里勾选任务清单时回调 (行号, 是否勾选)
@@ -230,18 +233,38 @@ struct MarkdownPreview: NSViewRepresentable {
             return
         }
 
-        guard loaded != body else { return }
+        guard loaded != body else {
+            scrollToHeadingIfNeeded(webView, coordinator: coordinator)
+            return
+        }
         coordinator.loadedBody = body
 
         // 只替换 body 内容：不重建文档、不重启排版、滚动位置自然保持
         guard let literal = Self.jsStringLiteral(body) else { return }
         webView.evaluateJavaScript("document.body.innerHTML = \(literal);") { _, error in
+            if error == nil { self.scrollToHeadingIfNeeded(webView, coordinator: coordinator) }
             if let error {
                 // 注入失败就退回整页重载，宁可慢一点也不能显示旧内容
                 coordinator.isReady = false
                 _ = webView.loadHTMLString(document, baseURL: nil)
                 NSLog("TongMD preview injection failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// 把预览滚到指定标题；没有目标就什么也不做
+    private func scrollToHeadingIfNeeded(_ webView: WKWebView, coordinator: Coordinator) {
+        guard let heading = scrollTargetHeading else { return }
+        guard coordinator.isReady else { return }
+        let literal = Self.jsStringLiteral(heading) ?? "\"\""
+        let script = """
+        var hs = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
+        for (var i = 0; i < hs.length; i++) {
+            if (hs[i].textContent.trim() === \(literal)) { hs[i].scrollIntoView({block: 'start'}); break; }
+        }
+        """
+        webView.evaluateJavaScript(script) { _, _ in
+            self.onScrollHandled()
         }
     }
 

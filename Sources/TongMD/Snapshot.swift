@@ -99,6 +99,10 @@ enum Snapshot {
             for note in model.notes.prefix(3) { model.openNote(note.url) }
         }
 
+        if ProcessInfo.processInfo.environment["TONGMD_OUTLINE"] == "1" {
+            model.showOutline = true
+        }
+
         if let title = ProcessInfo.processInfo.environment["TONGMD_OPEN"],
            let note = model.notes.first(where: { $0.title == title }) {
             model.openNote(note.url)

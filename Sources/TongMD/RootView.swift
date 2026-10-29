@@ -745,7 +745,13 @@ struct EditorPane: View {
                 FormatBar()
                 Divider()
             }
-            content
+            HStack(spacing: 0) {
+                if model.showOutline, model.selection != nil {
+                    OutlinePane()
+                    Divider()
+                }
+                content
+            }
             backlinksBar
             StatusBar()
         }
@@ -778,13 +784,9 @@ struct EditorPane: View {
                 Button {
                     model.showOutline.toggle()
                 } label: {
-                    Image(systemName: "list.bullet.indent")
+                    Image(systemName: "sidebar.leading")
                 }
-                .help("大纲")
-                .popover(isPresented: $model.showOutline, arrowEdge: .bottom) {
-                    OutlineView()
-                        .environmentObject(model)
-                }
+                .help(model.showOutline ? "隐藏大纲 ⇧⌘O" : "显示大纲 ⇧⌘O")
                 .disabled(model.selection == nil)
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -897,6 +899,8 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
+                scrollTargetHeading: model.pendingPreviewHeading,
+                onScrollHandled: { model.pendingPreviewHeading = nil },
                 onWikiLink: { model.openWikiLink($0) },
                 onToggleTask: { line, checked in model.toggleTask(line: line, checked: checked) },
                 onCopyCode: { model.copyCode($0) }
@@ -920,6 +924,8 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
+                scrollTargetHeading: model.pendingPreviewHeading,
+                onScrollHandled: { model.pendingPreviewHeading = nil },
                 onWikiLink: { model.openWikiLink($0) },
                 onToggleTask: { line, checked in model.toggleTask(line: line, checked: checked) },
                 onCopyCode: { model.copyCode($0) }

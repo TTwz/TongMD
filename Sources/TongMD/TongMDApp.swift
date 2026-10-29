@@ -173,6 +173,9 @@ struct TongMDCommands: Commands {
             }
             .pickerStyle(.inline)
             Divider()
+            Button(model.showOutline ? "隐藏大纲" : "显示大纲") { model.showOutline.toggle() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.selection == nil)
             Divider()
             Button("放大字号") { model.increaseFontSize() }
                 .keyboardShortcut("+", modifiers: .command)
