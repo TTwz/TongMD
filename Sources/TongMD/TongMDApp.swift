@@ -184,6 +184,15 @@ struct TongMDCommands: Commands {
             Button("实际大小") { model.resetFontSize() }
                 .keyboardShortcut("0", modifiers: .command)
             Divider()
+            Menu("背景色") {
+                Picker("背景色", selection: $model.theme) {
+                    ForEach(PaperTheme.allCases) { theme in
+                        Text(theme.label).tag(theme)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+            Divider()
             Button("Markdown 速查") { model.showCheatSheet = true }
                 .keyboardShortcut("/", modifiers: [.command, .shift])
         }

@@ -57,6 +57,8 @@ struct RootView: View {
             // 退出前把 debounce 里还没写盘的内容落掉
             model.flushPendingSave()
         }
+        // 白纸 / 米黄 / 护眼绿固定浅色，深色固定深色；跟随系统时为 nil
+        .preferredColorScheme(model.theme.preferredColorScheme)
     }
 }
 
@@ -727,6 +729,8 @@ struct WelcomeView: View {
 
 struct EditorPane: View {
     @EnvironmentObject private var model: AppModel
+    /// 分栏时编辑器与预览共用一个滚动同步器
+    @StateObject private var scrollSync = SplitScrollSync()
 
     private var textBinding: Binding<String> {
         Binding(
@@ -788,6 +792,19 @@ struct EditorPane: View {
                 }
                 .help(model.showOutline ? "隐藏大纲 ⇧⌘O" : "显示大纲 ⇧⌘O")
                 .disabled(model.selection == nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Picker("背景色", selection: $model.theme) {
+                        ForEach(PaperTheme.allCases) { theme in
+                            Text(theme.label).tag(theme)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: "paintpalette")
+                }
+                .help("切换背景色")
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.pendingChanges > 0 {
@@ -885,6 +902,8 @@ struct EditorPane: View {
             MarkdownEditor(
                 text: textBinding,
                 fontSize: CGFloat(model.fontSize),
+                theme: model.theme,
+                scrollSync: scrollSync,
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
@@ -900,6 +919,8 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
+                theme: model.theme,
+                scrollSync: scrollSync,
                 scrollTargetHeading: model.pendingPreviewHeading,
                 onScrollHandled: { model.pendingPreviewHeading = nil },
                 onWikiLink: { model.openWikiLink($0) },
@@ -911,6 +932,8 @@ struct EditorPane: View {
                 MarkdownEditor(
                 text: textBinding,
                 fontSize: CGFloat(model.fontSize),
+                theme: model.theme,
+                scrollSync: scrollSync,
                 plainText: model.isPlainTextNote,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
@@ -926,6 +949,8 @@ struct EditorPane: View {
                 body: model.previewBody,
                 noteID: model.selection,
                 fontSize: CGFloat(model.fontSize) + 1,
+                theme: model.theme,
+                scrollSync: scrollSync,
                 scrollTargetHeading: model.pendingPreviewHeading,
                 onScrollHandled: { model.pendingPreviewHeading = nil },
                 onWikiLink: { model.openWikiLink($0) },

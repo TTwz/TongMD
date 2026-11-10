@@ -7,6 +7,10 @@ import WebKit
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat = 15
+    /// 写作区背景色
+    var theme: PaperTheme = .system
+    /// 分栏滚动同步；单独编辑时传 nil
+    var scrollSync: SplitScrollSync? = nil
     /// .txt 用纯文本模式：不高亮 Markdown、不自动续列表
     var plainText: Bool = false
     /// 当前笔记路径：粘贴图片时用来决定 assets/ 位置
@@ -21,14 +25,14 @@ struct MarkdownEditor: NSViewRepresentable {
     var onScrollHandled: () -> Void = {}
     /// 光标移动时回调（用于同步大纲高亮）
     var onCaretMoved: (Int) -> Void = { _ in }
-
     func makeNSView(context: Context) -> NSScrollView {
+        let palette = theme.editorPalette
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
         scrollView.borderType = .noBorder
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.backgroundColor = palette.background
 
         let storage = NSTextStorage()
         let layoutManager = NSLayoutManager()
@@ -52,7 +56,7 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainerInset = NSSize(width: 26, height: 28)
         textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
+        textView.backgroundColor = palette.background
 
         textView.delegate = context.coordinator
         textView.isRichText = false
@@ -64,11 +68,12 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isAutomaticLinkDetectionEnabled = false
         textView.smartInsertDeleteEnabled = false
-        textView.insertionPointColor = .labelColor
+        textView.insertionPointColor = palette.text
 
         let highlighter = MarkdownSyntaxHighlighter()
         highlighter.fontSize = fontSize
         highlighter.isPlainText = plainText
+        highlighter.palette = palette
         highlighter.textView = textView
         textView.isPlainText = plainText
         textView.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
@@ -90,14 +95,38 @@ struct MarkdownEditor: NSViewRepresentable {
         }
 
         scrollView.documentView = textView
+        // 分栏同步：监听裁剪视图的位置变化
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.boundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        context.coordinator.scrollView = scrollView
+        context.coordinator.scrollSync = scrollSync
+        scrollSync?.attachEditor(scrollView)
+
         // 高亮会把标题字号变大，先滚到顶，避免第一行被挤出可视区域
         textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
         return scrollView
     }
 
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
+        coordinator.scrollSync?.detachEditor(scrollView)
+    }
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.scrollSync = scrollSync
         guard let textView = scrollView.documentView as? NSTextView else { return }
+
+        // 换背景色：滚动区、正文底色、光标和语法高亮的颜色一起换
+        if context.coordinator.theme != theme {
+            context.coordinator.theme = theme
+            applyTheme(to: textView, scrollView: scrollView)
+        }
 
         (textView as? MarkdownTextView)?.attachmentDirectory = noteURL?.deletingLastPathComponent() ?? fallbackAttachmentDirectory
         (textView as? MarkdownTextView)?.attachmentRoot = vaultURL
@@ -146,6 +175,8 @@ struct MarkdownEditor: NSViewRepresentable {
                 location: location,
                 length: min(target.length, max(0, length - location))
             )
+            // 大纲 / 搜索的主动定位：让另一边别把这次跳转同步回去
+            scrollSync?.suspend()
             onScrollHandled()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 textView.setSelectedRange(safe)
@@ -153,6 +184,21 @@ struct MarkdownEditor: NSViewRepresentable {
                 Self.alignRangeToTop(safe, in: textView)
             }
         }
+    }
+
+    /// 只换颜色，不动文本内容：重新上色后光标和滚动位置都保持原样。
+    private func applyTheme(to textView: NSTextView, scrollView: NSScrollView) {
+        let palette = theme.editorPalette
+        scrollView.backgroundColor = palette.background
+        textView.backgroundColor = palette.background
+        textView.insertionPointColor = palette.text
+
+        guard let highlighter = (textView as? MarkdownTextView)?.highlighter else { return }
+        highlighter.palette = palette
+        if let storage = textView.textStorage {
+            highlighter.highlightAll(storage, caret: textView.selectedRange().location)
+        }
+        highlighter.updateTypingAttributes(textView)
     }
 
     /// 把目标行滚到视口顶部。用 NSView.scroll(to:) 让 AppKit 处理翻转坐标，
@@ -174,9 +220,32 @@ struct MarkdownEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownEditor
         var highlighter: MarkdownSyntaxHighlighter?
+        var theme: PaperTheme
+        var scrollSync: SplitScrollSync?
+        weak var scrollView: NSScrollView?
+        /// 上一次上报的进度，避免布局微调时重复发消息
+        private var lastProgress: Double = -1
 
         init(_ parent: MarkdownEditor) {
             self.parent = parent
+            self.theme = parent.theme
+            self.scrollSync = parent.scrollSync
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        @objc func boundsDidChange(_ notification: Notification) {
+            guard let scrollView, let scrollSync else { return }
+            let progress = SplitScrollSync.progress(
+                offset: scrollView.contentView.bounds.origin.y,
+                visible: scrollView.contentView.bounds.height,
+                documentFrame: scrollView.documentView?.frame ?? .zero
+            )
+            guard abs(progress - lastProgress) > 0.0005 else { return }
+            lastProgress = progress
+            scrollSync.editorScrolled(to: progress)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -204,6 +273,10 @@ struct MarkdownPreview: NSViewRepresentable {
     let body: String
     var noteID: URL? = nil
     var fontSize: CGFloat = 16
+    /// 写作区背景色（体现在注入的 CSS 变量上）
+    var theme: PaperTheme = .system
+    /// 分栏滚动同步；单独预览时传 nil
+    var scrollSync: SplitScrollSync? = nil
     /// 点大纲时滚动到对应标题
     var scrollTargetHeading: String? = nil
     var onScrollHandled: () -> Void = {}
@@ -221,11 +294,18 @@ struct MarkdownPreview: NSViewRepresentable {
         let webView = NonFocusableWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
+        context.coordinator.scrollSync = scrollSync
+        scrollSync?.attachPreview(webView)
         return webView
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.scrollSync?.detachPreview(webView)
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         let coordinator = context.coordinator
+        coordinator.scrollSync = scrollSync
         coordinator.onWikiLink = onWikiLink
         coordinator.onToggleTask = onToggleTask
         coordinator.onCopyCode = onCopyCode
@@ -235,10 +315,23 @@ struct MarkdownPreview: NSViewRepresentable {
             webView.evaluateJavaScript("document.documentElement.style.setProperty('--base', '\(Int(fontSize.rounded()))px')")
         }
 
-        if coordinator.noteID != noteID {
-            coordinator.noteID = noteID
+        // 换背景色要重载整页：CSS 变量写在 <head> 里，增量替换 body 改不到。
+        // 内容没变，记下当前位置，加载完再滚回去，别让预览突然跳回顶部。
+        if coordinator.loadedTheme != theme {
+            coordinator.loadedTheme = theme
+            coordinator.restoreScrollProgress = coordinator.lastScrollProgress
             coordinator.isReady = false
             coordinator.loadedBody = nil
+            coordinator.scrollSync?.suspend()
+        }
+
+        if coordinator.noteID != noteID {
+            coordinator.noteID = noteID
+            coordinator.restoreScrollProgress = nil
+            coordinator.isReady = false
+            coordinator.loadedBody = nil
+            // 换笔记时两边内容都整个换掉，先别同步，免得旧位置把新文档带偏
+            coordinator.scrollSync?.suspend()
         }
 
         // 首次加载、切换笔记、或页面还没就绪：整页加载一次
@@ -271,6 +364,8 @@ struct MarkdownPreview: NSViewRepresentable {
     private func scrollToHeadingIfNeeded(_ webView: WKWebView, coordinator: Coordinator) {
         guard let heading = scrollTargetHeading else { return }
         guard coordinator.isReady else { return }
+        // 大纲定位是主动跳转，不要被滚动同步再推回去
+        coordinator.scrollSync?.suspend()
         let literal = Self.jsStringLiteral(heading) ?? "\"\""
         let script = """
         var hs = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
@@ -299,6 +394,11 @@ struct MarkdownPreview: NSViewRepresentable {
         var noteID: URL?
         var loadedBody: String?
         var loadedFontSize: CGFloat = 16
+        var loadedTheme: PaperTheme = .system
+        /// 分栏滚动同步：记录最后一次位置，外加主题重载后的恢复位置
+        var scrollSync: SplitScrollSync?
+        var lastScrollProgress: Double = 0
+        var restoreScrollProgress: Double?
         var isReady = false
         var onWikiLink: ((String) -> Void)?
         var onToggleTask: ((Int, Bool) -> Void)?
@@ -320,6 +420,10 @@ struct MarkdownPreview: NSViewRepresentable {
                 if let text = body["text"] as? String {
                     onCopyCode?(text)
                 }
+            case "scroll":
+                guard let progress = (body["progress"] as? NSNumber)?.doubleValue else { return }
+                lastScrollProgress = progress
+                scrollSync?.previewScrolled(to: progress)
             default:
                 break
             }
@@ -327,6 +431,13 @@ struct MarkdownPreview: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             isReady = true
+            guard let progress = restoreScrollProgress else { return }
+            restoreScrollProgress = nil
+            guard progress > 0.001 else { return }
+            webView.evaluateJavaScript(
+                SplitScrollSync.scrollScript(progress: progress),
+                completionHandler: nil
+            )
         }
 
         func webView(

@@ -7,6 +7,48 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
+                Section("外观") {
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(PaperTheme.allCases) { theme in
+                            Button {
+                                model.theme = theme
+                            } label: {
+                                VStack(spacing: 6) {
+                                    ZStack {
+                                        swatchView(for: theme)
+                                        Circle()
+                                            .strokeBorder(
+                                                model.theme == theme
+                                                    ? Color.accentColor
+                                                    : Color(nsColor: .separatorColor),
+                                                lineWidth: model.theme == theme ? 2 : 1
+                                            )
+                                        if model.theme == theme {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(Color(nsColor: theme.checkColor))
+                                                .shadow(color: .black.opacity(0.25), radius: 1)
+                                        }
+                                    }
+                                    .frame(width: 26, height: 26)
+                                    Text(theme.label)
+                                        .font(.caption)
+                                        .foregroundStyle(model.theme == theme ? .primary : .secondary)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(theme.detail)
+                        }
+                    }
+                    .padding(.vertical, 4)
+
+                    Text(model.theme.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("笔记库") {
                     LabeledContent("文件夹") {
                         Text(model.vaultPath ?? "未选择")
@@ -218,5 +260,26 @@ struct SettingsView: View {
         }
         .frame(width: 560, height: 520)
         .onAppear { model.refreshAttachmentStatsNow() }
+    }
+
+    /// 「跟随系统」用黑白渐变示意会随外观变化，其余主题显示实际纸面颜色。
+    @ViewBuilder
+    private func swatchView(for theme: PaperTheme) -> some View {
+        if theme == .system {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: NSColor(hex: "#ffffff")),
+                            Color(nsColor: NSColor(hex: "#1c1c1e"))
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        } else {
+            Circle()
+                .fill(Color(nsColor: theme.swatch))
+        }
     }
 }

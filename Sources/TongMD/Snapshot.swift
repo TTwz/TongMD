@@ -27,6 +27,10 @@ enum Snapshot {
            let value = Double(raw) {
             model.fontSize = value
         }
+        if let raw = ProcessInfo.processInfo.environment["TONGMD_THEME"],
+           let value = PaperTheme(rawValue: raw) {
+            model.theme = value
+        }
 
         let size = NSSize(width: 1280, height: 800)
         let root = RootView()
@@ -126,6 +130,50 @@ enum Snapshot {
         spin(2.0)
         captureWindow(to: outputPath)
 
+        // 分栏滚动同步自检：先滚编辑区，再滚预览，检查另一边是否跟到相同进度
+        if ProcessInfo.processInfo.environment["TONGMD_SYNC_CHECK"] == "1",
+           let editorScroll = findEditorScrollView(in: hosting),
+           let syncWeb = findWebView(in: hosting) {
+            func editorProgress() -> Double {
+                SplitScrollSync.progress(
+                    offset: editorScroll.contentView.bounds.origin.y,
+                    visible: editorScroll.contentView.bounds.height,
+                    documentFrame: editorScroll.documentView?.frame ?? .zero
+                )
+            }
+            func previewProgress() -> Double {
+                let script = """
+                (function () {
+                    var max = document.documentElement.scrollHeight - window.innerHeight;
+                    return max > 0 ? window.scrollY / max : 0;
+                })();
+                """
+                return (eval(syncWeb, script) as? NSNumber)?.doubleValue ?? -1
+            }
+
+            let documentFrame = editorScroll.documentView?.frame ?? .zero
+            let visible = editorScroll.contentView.bounds.height
+            let maxOffset = max(0, documentFrame.height - visible)
+            editorScroll.contentView.scroll(
+                to: NSPoint(x: 0, y: documentFrame.minY + maxOffset * 0.5)
+            )
+            editorScroll.reflectScrolledClipView(editorScroll.contentView)
+            spin(0.5)
+            let fromEditor = previewProgress()
+            print("同步 编辑→预览: \(String(format: "%.3f", fromEditor))")
+            print(abs(fromEditor - 0.5) < 0.05 ? "✓ 编辑区滚动带动预览" : "✗ 编辑区滚动没有带动预览")
+
+            _ = eval(syncWeb, SplitScrollSync.scrollScript(progress: 0.25))
+            spin(0.5)
+            let fromPreview = editorProgress()
+            print("同步 预览→编辑: \(String(format: "%.3f", fromPreview))")
+            print(abs(fromPreview - 0.25) < 0.05 ? "✓ 预览滚动带动编辑区" : "✗ 预览滚动没有带动编辑区")
+
+            let echoed = previewProgress()
+            print("同步 回声检查: \(String(format: "%.3f", echoed))")
+            print(abs(echoed - 0.25) < 0.05 ? "✓ 同步没有来回抖动" : "✗ 同步出现回声抖动")
+        }
+
         guard let noteURL = model.selection,
               let web = findWebView(in: hosting) else {
             print("没找到笔记或预览视图")
@@ -185,6 +233,17 @@ enum Snapshot {
         if let web = view as? WKWebView { return web }
         for subview in view.subviews {
             if let found = findWebView(in: subview) { return found }
+        }
+        return nil
+    }
+
+    /// 编辑器是 NSScrollView + NSTextView；WKWebView 内部也有滚动视图，别认错
+    private static func findEditorScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView, scrollView.documentView is NSTextView {
+            return scrollView
+        }
+        for subview in view.subviews {
+            if let found = findEditorScrollView(in: subview) { return found }
         }
         return nil
     }

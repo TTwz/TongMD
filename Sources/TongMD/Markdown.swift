@@ -19,12 +19,14 @@ enum Markdown {
     }
 
     /// 完整文档：只在首次加载或切换笔记时用
-    static func document(body: String, fontSize: CGFloat = 16) -> String {
+    static func document(body: String, fontSize: CGFloat = 16, theme: PaperTheme = .system) -> String {
         """
         <!doctype html>
         <html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>:root { --base: \(Int(fontSize.rounded()))px }\(css)</style></head>
+        <style>:root { --base: \(Int(fontSize.rounded()))px }
+        \(theme.cssVariables)
+        \(css)</style></head>
         <body>\(body)</body>
         <script>
         document.addEventListener('click', function (event) {
@@ -51,13 +53,34 @@ enum Markdown {
                 });
             }
         });
+
+        // 分栏滚动同步：把 0…1 的滚动进度报给原生侧
+        window.addEventListener('scroll', function () {
+            var max = document.documentElement.scrollHeight - window.innerHeight;
+            var progress = max > 0 ? window.scrollY / max : 0;
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tongmd) {
+                window.webkit.messageHandlers.tongmd.postMessage({
+                    type: 'scroll',
+                    progress: progress
+                });
+            }
+        }, { passive: true });
         </script>
         </html>
         """
     }
 
-    static func document(from markdown: String, baseDirectory: URL?, fontSize: CGFloat = 16) -> String {
-        document(body: body(from: markdown, baseDirectory: baseDirectory), fontSize: fontSize)
+    static func document(
+        from markdown: String,
+        baseDirectory: URL?,
+        fontSize: CGFloat = 16,
+        theme: PaperTheme = .system
+    ) -> String {
+        document(
+            body: body(from: markdown, baseDirectory: baseDirectory),
+            fontSize: fontSize,
+            theme: theme
+        )
     }
 
     // MARK: - 块级
@@ -674,34 +697,27 @@ enum Markdown {
     // MARK: - 样式
 
     static let css = """
-    :root { color-scheme: light dark; }
+    html { background: var(--bg); }
     body {
         margin: 0 auto; padding: 32px 40px 120px; max-width: 760px;
         font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
         font-size: var(--base, 16px);
         line-height: 1.8;
-        color: #1d1d1f; background: #ffffff;
+        color: var(--fg); background: var(--bg);
         -webkit-font-smoothing: antialiased;
-    }
-    @media (prefers-color-scheme: dark) {
-        body { color: #e6e6e6; background: #1c1c1e; }
-        code, pre { background: #2c2c2e !important; }
-        blockquote { border-color: #48484a !important; color: #b0b0b5 !important; }
-        hr { border-color: #38383a !important; }
-        a { color: #6cb4ff !important; }
     }
     h1, h2, h3, h4, h5, h6 { line-height: 1.35; margin: 1.6em 0 0.6em; font-weight: 650; }
     h1 { font-size: 1.75em; } h2 { font-size: 1.4em; } h3 { font-size: 1.18em; }
     h4, h5, h6 { font-size: 1em; }
     p { margin: 0.85em 0; }
-    a { color: #0969da; text-decoration: none; }
+    a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
     code {
         font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: #f2f2f4; padding: 0.12em 0.35em; border-radius: 4px;
+        background: var(--code-bg); padding: 0.12em 0.35em; border-radius: 4px;
     }
     pre {
-        background: #f6f6f8; padding: 14px 16px; border-radius: 8px; overflow-x: auto;
+        background: var(--pre-bg); padding: 14px 16px; border-radius: 8px; overflow-x: auto;
         line-height: 1.55;
     }
     pre code { background: none; padding: 0; font-size: 0.86em; }
@@ -709,15 +725,12 @@ enum Markdown {
     .code-block .copy {
         position: absolute; top: 8px; right: 8px;
         font-size: 11px; line-height: 1; padding: 4px 8px;
-        border-radius: 6px; border: 1px solid rgba(0,0,0,0.12);
-        background: rgba(255,255,255,0.92); color: #555;
+        border-radius: 6px; border: 1px solid var(--copy-border);
+        background: var(--copy-bg); color: var(--copy-fg);
         opacity: 0; transition: opacity 0.12s ease; cursor: pointer;
     }
     .code-block:hover .copy { opacity: 1; }
     .code-block .copy:active { transform: scale(0.97); }
-    @media (prefers-color-scheme: dark) {
-        .code-block .copy { background: rgba(44,44,46,0.92); color: #ddd; border-color: rgba(255,255,255,0.15); }
-    }
     pre.plain {
         background: transparent; padding: 0; border-radius: 0;
         font: 0.92em/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -725,35 +738,24 @@ enum Markdown {
     }
     blockquote {
         margin: 1em 0; padding: 0.1em 0 0.1em 1em;
-        border-left: 3px solid #d0d0d5; color: #6e6e73;
+        border-left: 3px solid var(--border-strong); color: var(--muted);
     }
     blockquote p { margin: 0.4em 0; }
     ul, ol { padding-left: 1.5em; margin: 0.85em 0; }
     li { margin: 0.3em 0; }
-    hr { border: none; border-top: 1px solid #e0e0e4; margin: 2em 0; }
+    hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
     img { max-width: 100%; border-radius: 6px; margin: 0.6em 0; }
-    .wiki { color: #8b5cf6; border-bottom: 1px dashed currentColor; cursor: pointer; text-decoration: none; }
-    .wiki:hover { color: #7c3aed; }
-    del { color: #8e8e93; }
-    mark { background: #fff3a3; color: inherit; padding: 0 2px; border-radius: 2px; }
-    .tok-kw { color: #9b2393; }
-    .tok-str { color: #c41a16; }
-    .tok-com { color: #6c7986; font-style: italic; }
-    .tok-num { color: #1c00cf; }
-    @media (prefers-color-scheme: dark) {
-        mark { background: #665c00; }
-        .tok-kw { color: #fc5fa3; }
-        .tok-str { color: #fc6a5d; }
-        .tok-com { color: #7f8c98; }
-        .tok-num { color: #d0bf69; }
-    }
+    .wiki { color: var(--wiki); border-bottom: 1px dashed currentColor; cursor: pointer; text-decoration: none; }
+    .wiki:hover { opacity: 0.8; }
+    del { color: var(--muted); }
+    mark { background: var(--mark); color: inherit; padding: 0 2px; border-radius: 2px; }
+    .tok-kw { color: var(--tok-kw); }
+    .tok-str { color: var(--tok-str); }
+    .tok-com { color: var(--tok-com); font-style: italic; }
+    .tok-num { color: var(--tok-num); }
     table { border-collapse: collapse; margin: 1em 0; width: 100%; font-size: 0.95em; }
-    th, td { border: 1px solid #e0e0e4; padding: 7px 10px; text-align: left; vertical-align: top; }
-    th { background: #f6f6f8; font-weight: 600; }
-    @media (prefers-color-scheme: dark) {
-        th, td { border-color: #3a3a3c; }
-        th { background: #2c2c2e; }
-    }
+    th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+    th { background: var(--pre-bg); font-weight: 600; }
     li.task { list-style: none; margin-left: -1.3em; }
     li.task input[type="checkbox"] { margin-right: 6px; transform: translateY(1px); }
     """

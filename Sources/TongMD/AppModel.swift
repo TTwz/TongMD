@@ -15,6 +15,7 @@ final class AppModel: ObservableObject {
         static let mode = "editorMode"
         static let fontSize = "editorFontSize"
         static let showOutline = "showOutline"
+        static let theme = "paperTheme"
     }
 
     private let defaults = UserDefaults.standard
@@ -221,7 +222,24 @@ final class AppModel: ObservableObject {
                 return
             }
             defaults.set(fontSize, forKey: Keys.fontSize)
-            previewHTML = Markdown.document(body: previewBody, fontSize: CGFloat(fontSize) + 1)
+            previewHTML = Markdown.document(
+                body: previewBody,
+                fontSize: CGFloat(fontSize) + 1,
+                theme: theme
+            )
+        }
+    }
+    /// 写作区背景色。切换时同步窗口外观，并重绘预览（预览 CSS 变量跟着变）
+    @Published var theme: PaperTheme = .system {
+        didSet {
+            guard oldValue != theme else { return }
+            defaults.set(theme.rawValue, forKey: Keys.theme)
+            applyTheme()
+            previewHTML = Markdown.document(
+                body: previewBody,
+                fontSize: CGFloat(fontSize) + 1,
+                theme: theme
+            )
         }
     }
     @Published var mode: EditorMode = .split {
@@ -284,6 +302,11 @@ final class AppModel: ObservableObject {
         return false
     }
 
+    /// 白纸 / 米黄 / 护眼绿固定为浅色外观，深色固定为深色；跟随系统则交还给 macOS。
+    private func applyTheme() {
+        NSApp?.appearance = theme.appearance
+    }
+
     // MARK: - 生命周期
 
     init(temporaryVault: URL? = nil) {
@@ -293,9 +316,11 @@ final class AppModel: ObservableObject {
         dailyTemplate = defaults.string(forKey: Keys.dailyTemplate) ?? Templates.defaultDaily
         noteTemplate = defaults.string(forKey: Keys.noteTemplate) ?? ""
         mode = EditorMode(rawValue: defaults.string(forKey: Keys.mode) ?? "") ?? .split
+        theme = PaperTheme(rawValue: defaults.string(forKey: Keys.theme) ?? "") ?? .system
         fontSize = defaults.object(forKey: Keys.fontSize) as? Double ?? 15
         showOutline = defaults.object(forKey: Keys.showOutline) as? Bool ?? false
         token = TokenStore.load()
+        applyTheme()
 
         installClipboardShortcuts()
 
@@ -1585,7 +1610,11 @@ final class AppModel: ObservableObject {
             body = Markdown.body(from: source, baseDirectory: url.deletingLastPathComponent())
         }
         previewBody = body
-        previewHTML = Markdown.document(body: body, fontSize: CGFloat(fontSize) + 1)
+        previewHTML = Markdown.document(
+            body: body,
+            fontSize: CGFloat(fontSize) + 1,
+            theme: theme
+        )
     }
 
     /// 先按焦点分发快捷键，图片直接进入编辑器，侧栏负责文件复制/粘贴。

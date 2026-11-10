@@ -11,6 +11,9 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
     /// 纯文本（.txt）：只上基础属性，不解析 Markdown
     var isPlainText = false
 
+    /// 写作区背景色对应的配色；跟随系统时是动态语义色
+    var palette: EditorPalette = .system
+
     /// 超过这个长度就只高亮光标所在段落，避免长文每次按键全量重排
     private let paragraphHighlightLimit = 8_000
 
@@ -30,11 +33,11 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
     }
 
     private var baseAttributes: [NSAttributedString.Key: Any] {
-        [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraphStyle]
+        [.font: baseFont, .foregroundColor: palette.text, .paragraphStyle: paragraphStyle]
     }
 
-    private var markerColor: NSColor { .tertiaryLabelColor }
-    private var codeBackground: NSColor { NSColor.labelColor.withAlphaComponent(0.07) }
+    private var markerColor: NSColor { palette.marker }
+    private var codeBackground: NSColor { palette.codeBackground }
 
     // MARK: - NSTextStorageDelegate
 
@@ -146,7 +149,7 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
 
         if inCode {
             storage.addAttributes(
-                [.font: monoFont, .foregroundColor: NSColor.labelColor, .backgroundColor: codeBackground],
+                [.font: monoFont, .foregroundColor: palette.text, .backgroundColor: codeBackground],
                 range: lineRange
             )
             return
@@ -158,7 +161,7 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
             if contentRange.location != NSNotFound {
                 storage.addAttributes([
                     .font: headingFont(level: level),
-                    .foregroundColor: NSColor.labelColor
+                    .foregroundColor: palette.text
                 ], range: contentRange)
             }
             storage.addAttribute(.foregroundColor, value: markerColor, range: match.range(at: 1))
@@ -177,7 +180,7 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
                 length: max(0, NSMaxRange(lineRange) - NSMaxRange(match.range(at: 2)))
             )
             if rest.length > 0 {
-                storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: rest)
+                storage.addAttribute(.foregroundColor, value: palette.secondary, range: rest)
             }
             applyInline(ns, lineRange: lineRange, storage: storage)
             return
@@ -209,7 +212,7 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
         for match in allMatches(#"~~([^~\n]+)~~"#, in: ns, range: lineRange) {
             storage.addAttributes([
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .foregroundColor: NSColor.secondaryLabelColor
+                .foregroundColor: palette.secondary
             ], range: match.range(at: 1))
         }
 
@@ -219,14 +222,14 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
                 ? match.range(at: 1)
                 : match.range(at: 2)
             if nameRange.location != NSNotFound {
-                storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: nameRange)
+                storage.addAttribute(.foregroundColor, value: palette.link, range: nameRange)
             }
         }
 
         for match in allMatches(#"\[([^\]\n]+)\]\(([^)\n]+)\)"#, in: ns, range: lineRange) {
             // 先整体压暗，再单独把链接文字提亮，顺序反了文字会被盖掉
             storage.addAttribute(.foregroundColor, value: markerColor, range: match.range(at: 0))
-            storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: match.range(at: 1))
+            storage.addAttribute(.foregroundColor, value: palette.link, range: match.range(at: 1))
             storage.addAttribute(.foregroundColor, value: markerColor, range: match.range(at: 2))
         }
     }

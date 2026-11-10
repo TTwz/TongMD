@@ -86,6 +86,60 @@ enum SelfTest {
             check("正文用设定字号", abs((bodyFont?.pointSize ?? 0) - 20) < 0.5)
             check("预览文档带字号变量", Markdown.document(body: "x", fontSize: 18).contains("--base: 18px"))
 
+            print("背景色")
+            let systemDoc = Markdown.document(body: "x")
+            check("跟随系统带浅色变量", systemDoc.contains("--bg: #ffffff"))
+            check("跟随系统带深色媒体查询", systemDoc.contains("prefers-color-scheme: dark"))
+            let darkDoc = Markdown.document(body: "x", theme: .dark)
+            check("深色纸面固定深色", darkDoc.contains("color-scheme: dark") && darkDoc.contains("--bg: #1c1c1e"))
+            let sepiaDoc = Markdown.document(body: "x", theme: .sepia)
+            check("米黄纸面", sepiaDoc.contains("--bg: #f8f1e0") && sepiaDoc.contains("color-scheme: light"))
+            check("护眼绿纸面", Markdown.document(body: "x", theme: .green).contains("--bg: #eaf2e6"))
+            check("主题可持久化回读", PaperTheme(rawValue: PaperTheme.sepia.rawValue) == .sepia)
+            check("编辑器配色跟纸面一致", PaperTheme.sepia.editorPalette.background == NSColor(hex: "#f8f1e0"))
+
+            let themedStorage = NSTextStorage(string: "# 标题\n正文")
+            let themedHighlighter = MarkdownSyntaxHighlighter()
+            themedHighlighter.palette = PaperTheme.dark.editorPalette
+            themedHighlighter.highlightAll(themedStorage)
+            let themedColor = themedStorage.attributes(
+                at: (themedStorage.string as NSString).range(of: "正文").location,
+                effectiveRange: nil
+            )[.foregroundColor] as? NSColor
+            check("深色主题正文颜色", themedColor == NSColor(hex: "#e6e6e6"))
+
+            print("分栏滚动同步")
+            let frame = CGRect(x: 0, y: 0, width: 0, height: 1400)
+            check("滚动进度起点", SplitScrollSync.progress(offset: 0, visible: 400, documentFrame: frame) == 0)
+            check(
+                "滚动进度中点",
+                abs(SplitScrollSync.progress(offset: 500, visible: 400, documentFrame: frame) - 0.5) < 0.0001
+            )
+            check("滚动进度终点", SplitScrollSync.progress(offset: 1000, visible: 400, documentFrame: frame) == 1)
+            check(
+                "内容不足时为 0",
+                SplitScrollSync.progress(offset: 100, visible: 400, documentFrame: CGRect(x: 0, y: 0, width: 0, height: 300)) == 0
+            )
+            check("越界进度被夹住", SplitScrollSync.progress(offset: 9999, visible: 400, documentFrame: frame) == 1)
+
+            // 真实窗口里 documentView 的 y 起点可能是负数（NavigationSplitView 会这样）
+            let shifted = CGRect(x: 0, y: -1000, width: 0, height: 1400)
+            check(
+                "负原点：顶部为 0",
+                SplitScrollSync.progress(offset: -1000, visible: 400, documentFrame: shifted) == 0
+            )
+            check(
+                "负原点：中点仍然是 0.5",
+                abs(SplitScrollSync.progress(offset: -500, visible: 400, documentFrame: shifted) - 0.5) < 0.0001
+            )
+            check(
+                "负原点：底部为 1",
+                SplitScrollSync.progress(offset: 0, visible: 400, documentFrame: shifted) == 1
+            )
+
+            check("滚动脚本带进度", SplitScrollSync.scrollScript(progress: 0.25).contains("0.25"))
+            check("滚动脚本夹住越界值", SplitScrollSync.scrollScript(progress: 2).contains("1.0"))
+
             print("智能续行")
             check("无序列表续行", TextActions.continuationPrefix(for: "- 一") == "- ")
             check("有序列表递增", TextActions.continuationPrefix(for: "1. 一") == "2. ")
