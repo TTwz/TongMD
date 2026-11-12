@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import WebKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -1636,6 +1637,29 @@ final class AppModel: ObservableObject {
         if let editor = window.firstResponder as? MarkdownTextView {
             return key == "v" && editor.insertPastedImage(from: pasteboard)
         }
+
+        // 预览获得焦点时：⌘C 复制网页里的选区；⌘V 仍然送回编辑器，
+        // 保持「点了预览也能直接粘贴」的旧习惯。
+        if let webView = Self.enclosingWebView(window.firstResponder) {
+            if key == "c" {
+                Self.copyPreviewSelection(from: webView, to: pasteboard)
+                return true
+            }
+            guard let editor = Self.findEditor(in: window.contentView) else { return false }
+            window.makeFirstResponder(editor)
+            if editor.insertPastedImage(from: pasteboard) { return true }
+            if let text = pasteboard.string(forType: .string), !text.isEmpty {
+                editor.insertText(text, replacementRange: editor.selectedRange())
+                return true
+            }
+            // 文件等非文本类型交还给系统粘贴（只对真实剪贴板有效）
+            if pasteboard === NSPasteboard.general {
+                editor.paste(nil)
+                return true
+            }
+            return false
+        }
+
         // 搜索框、设置输入框和其它文本视图保持系统的复制/粘贴。
         if window.firstResponder is NSTextView { return false }
 
@@ -1655,6 +1679,46 @@ final class AppModel: ObservableObject {
             if let found = findEditor(in: subview) { return found }
         }
         return nil
+    }
+
+    /// first responder 可能是 WKWebView 私有内容视图，往上找到 WebView 本体
+    private static func enclosingWebView(_ responder: NSResponder?) -> WKWebView? {
+        var view = responder as? NSView
+        while let current = view {
+            if let webView = current as? WKWebView { return webView }
+            view = current.superview
+        }
+        return nil
+    }
+
+    /// 预览不是普通 NSTextView，⌘C 需要把网页选区取出来写进剪贴板。
+    /// 同时带上 HTML，粘到富文本编辑器里还能保留加粗、链接等格式。
+    private static func copyPreviewSelection(from webView: WKWebView, to pasteboard: NSPasteboard) {
+        let script = """
+        (function () {
+            var selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0) { return null; }
+            var text = selection.toString();
+            if (!text) { return null; }
+            var container = document.createElement('div');
+            container.appendChild(selection.getRangeAt(0).cloneContents());
+            return JSON.stringify({ text: text, html: container.innerHTML });
+        })();
+        """
+        webView.evaluateJavaScript(script) { result, _ in
+            guard let json = result as? String,
+                  let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let payload = object as? [String: Any],
+                  let text = payload["text"] as? String,
+                  !text.isEmpty else { return }
+
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            if let html = payload["html"] as? String, !html.isEmpty {
+                pasteboard.setString(html, forType: .html)
+            }
+        }
     }
 
     // MARK: - 标签页

@@ -262,10 +262,6 @@ struct MarkdownEditor: NSViewRepresentable {
     }
 }
 
-final class NonFocusableWebView: WKWebView {
-    override var acceptsFirstResponder: Bool { false }
-}
-
 struct MarkdownPreview: NSViewRepresentable {
     /// 完整文档，只在首次加载/切换笔记时用
     let document: String
@@ -288,10 +284,11 @@ struct MarkdownPreview: NSViewRepresentable {
     var onCopyCode: ((String) -> Void)? = nil
 
     func makeNSView(context: Context) -> WKWebView {
-        // 预览是只读的，不应该抢走编辑器的焦点：否则点了预览再按 ⌘V 会没有任何反应
+        // 预览要能获得焦点：只有这样鼠标才能选中文字、⌘C 才能复制预览内容。
+        // 点预览后按 ⌘V 仍然由 AppModel 送回编辑器，不会丢粘贴。
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "tongmd")
-        let webView = NonFocusableWebView(frame: .zero, configuration: configuration)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
         context.coordinator.scrollSync = scrollSync

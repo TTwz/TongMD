@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import WebKit
 
 enum ClipboardSelfTest {
     @MainActor
@@ -50,6 +51,27 @@ enum ClipboardSelfTest {
                              timestamp: 0, windowNumber: window.windowNumber, context: nil,
                              characters: character, charactersIgnoringModifiers: character,
                              isARepeat: false, keyCode: character == "c" ? 8 : 9)!
+        }
+
+        func spin(_ seconds: TimeInterval) {
+            let deadline = Date().addingTimeInterval(seconds)
+            while Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            }
+        }
+
+        func eval(_ web: WKWebView, _ script: String) -> Any? {
+            var result: Any?
+            var finished = false
+            web.evaluateJavaScript(script) { value, _ in
+                result = value
+                finished = true
+            }
+            let deadline = Date().addingTimeInterval(2)
+            while !finished, Date() < deadline {
+                spin(0.02)
+            }
+            return result
         }
 
         // 模拟截图后回到仍有光标的编辑器，无需重新点击左侧文件。
@@ -128,6 +150,51 @@ enum ClipboardSelfTest {
             key("v", modifiers: [.command, .shift]), in: window, pasteboard: pasteboard))
         check("Caps Lock 不影响截图快捷键", model.handleClipboardShortcut(
             key("v", modifiers: [.command, .capsLock]), in: window, pasteboard: pasteboard))
+        // 预览：能选中、⌘C 复制选区，⌘V 仍然回到编辑器
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 160))
+        window.contentView?.addSubview(webView)
+        webView.loadHTMLString("<html><body><p>预览<strong>复制</strong>内容</p></body></html>", baseURL: nil)
+        spin(0.3)
+        let loadDeadline = Date().addingTimeInterval(2)
+        while webView.isLoading, Date() < loadDeadline {
+            spin(0.05)
+        }
+        window.makeFirstResponder(webView)
+        check("预览可以成为 first responder", window.firstResponder === webView)
+
+        let selectJS = """
+        (function () {
+            var p = document.querySelector('p');
+            if (!p) { return ''; }
+            var range = document.createRange();
+            range.selectNodeContents(p);
+            var selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return selection.toString();
+        })();
+        """
+        let selectedText = eval(webView, selectJS) as? String ?? ""
+        check("预览里能选中文字", selectedText == "预览复制内容")
+
+        pasteboard.clearContents()
+        check("预览聚焦时 ⌘C 由应用处理", model.handleClipboardShortcut(
+            key("c"), in: window, pasteboard: pasteboard))
+        spin(0.4)
+        check("预览选区写入剪贴板", pasteboard.string(forType: .string) == "预览复制内容")
+        check("预览复制带 HTML 格式", (pasteboard.string(forType: .html) ?? "").contains("<strong>复制</strong>"))
+
+        pasteboard.clearContents()
+        pasteboard.setString("预览后粘贴", forType: .string)
+        window.makeFirstResponder(webView)
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        check("预览聚焦时 ⌘V 送回编辑器", model.handleClipboardShortcut(
+            key("v"), in: window, pasteboard: pasteboard))
+        check("预览粘贴写进编辑器", editor.string.hasSuffix("预览后粘贴"))
+        check("粘贴后焦点回到编辑器", window.firstResponder === editor)
+        webView.removeFromSuperview()
+        window.makeFirstResponder(editor)
+
         model.saveNow()
         editor.isEditable = false
         check("只读编辑器不写入附件", !model.handleClipboardShortcut(key("v"), in: window,
