@@ -120,6 +120,7 @@ struct SidebarView: View {
                 Menu {
                     Button("新建笔记") { model.createNote() }
                     Button("新建文本文件") { model.createNote(fileExtension: "txt") }
+                    Button("新建 SQL 文件") { model.createNote(fileExtension: "sql") }
                     Button("新建文件夹") { model.createFolder() }
                 } label: {
                     Image(systemName: "plus")
@@ -230,7 +231,7 @@ struct SidebarView: View {
             if let tag = model.activeTag {
                 Section("标签 #\(tag)") {
                     ForEach(model.taggedNotes) { note in
-                        Label(note.title, systemImage: note.isPlainText ? "doc.plaintext" : "doc.richtext")
+                        Label(note.title, systemImage: note.iconName)
                             .tag(note.url)
                     }
                 }
@@ -246,6 +247,7 @@ struct SidebarView: View {
         .contextMenu {
             Button("新建笔记") { model.createNote(in: model.vaultURL) }
             Button("新建文本文件") { model.createNote(in: model.vaultURL, fileExtension: "txt") }
+            Button("新建 SQL 文件") { model.createNote(in: model.vaultURL, fileExtension: "sql") }
             Button("新建文件夹") { if let root = model.vaultURL { model.createFolder(in: root) } }
         }
     }
@@ -265,6 +267,7 @@ struct SidebarView: View {
         .contextMenu {
             Button("新建笔记") { model.createNote() }
             Button("新建文本文件") { model.createNote(fileExtension: "txt") }
+            Button("新建 SQL 文件") { model.createNote(fileExtension: "sql") }
             Button("新建文件夹") { if let root = model.vaultURL { model.createFolder(in: root) } }
             Divider()
             Button("在 Finder 中显示") { if let root = model.vaultURL { model.revealInFinder(root) } }
@@ -556,6 +559,7 @@ struct NodeRow: View {
     private var folderMenu: some View {
         Button("新建笔记") { model.createNote(in: node.url) }
         Button("新建文本文件") { model.createNote(in: node.url, fileExtension: "txt") }
+        Button("新建 SQL 文件") { model.createNote(in: node.url, fileExtension: "sql") }
         Button("新建文件夹") { model.createFolder(in: node.url) }
         Divider()
         Button("重命名…") { model.beginRename(node.url) }
@@ -597,6 +601,7 @@ struct NodeRow: View {
     private var noteMenu: some View {
         Button("新建笔记（同级）") { model.createNote(in: node.url.deletingLastPathComponent()) }
         Button("新建文本文件（同级）") { model.createNote(in: node.url.deletingLastPathComponent(), fileExtension: "txt") }
+        Button("新建 SQL 文件（同级）") { model.createNote(in: node.url.deletingLastPathComponent(), fileExtension: "sql") }
         Button("新建文件夹（同级）") { model.createFolder(in: node.url.deletingLastPathComponent()) }
         Divider()
         Button("在 Finder 中显示") { model.revealInFinder(node.url) }
@@ -905,6 +910,7 @@ struct EditorPane: View {
                 theme: model.theme,
                 scrollSync: scrollSync,
                 plainText: model.isPlainTextNote,
+                codeLanguage: model.isSQLNote ? "sql" : nil,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
                 vaultURL: model.vaultURL,
@@ -935,6 +941,7 @@ struct EditorPane: View {
                 theme: model.theme,
                 scrollSync: scrollSync,
                 plainText: model.isPlainTextNote,
+                codeLanguage: model.isSQLNote ? "sql" : nil,
                 noteURL: model.selection,
                 fallbackAttachmentDirectory: model.vaultURL,
                 vaultURL: model.vaultURL,

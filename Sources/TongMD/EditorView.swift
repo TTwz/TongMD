@@ -13,6 +13,8 @@ struct MarkdownEditor: NSViewRepresentable {
     var scrollSync: SplitScrollSync? = nil
     /// .txt 用纯文本模式：不高亮 Markdown、不自动续列表
     var plainText: Bool = false
+    /// 纯文本里的语言（sql 会做整篇关键字高亮）
+    var codeLanguage: String? = nil
     /// 当前笔记路径：粘贴图片时用来决定 assets/ 位置
     var noteURL: URL? = nil
     /// 没有打开笔记时的兜底目录（笔记库根）
@@ -137,6 +139,14 @@ struct MarkdownEditor: NSViewRepresentable {
            highlighter.isPlainText != plainText {
             highlighter.isPlainText = plainText
             (textView as? MarkdownTextView)?.isPlainText = plainText
+            if let storage = textView.textStorage {
+                highlighter.highlightAll(storage, caret: textView.selectedRange().location)
+            }
+        }
+
+        // 纯文本的语言变化（txt ↔ sql）：重新上色
+        if let highlighter = context.coordinator.highlighter, highlighter.codeLanguage != codeLanguage {
+            highlighter.codeLanguage = codeLanguage
             if let storage = textView.textStorage {
                 highlighter.highlightAll(storage, caret: textView.selectedRange().location)
             }

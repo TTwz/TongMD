@@ -21,7 +21,13 @@ struct TabBar: View {
     private func tab(_ url: URL) -> some View {
         let isActive = model.selection == url
         let title = url.deletingPathExtension().lastPathComponent
-        let icon = url.pathExtension.lowercased() == "txt" ? "doc.plaintext" : "doc.richtext"
+        let icon: String = {
+            switch url.pathExtension.lowercased() {
+            case "txt": return "doc.plaintext"
+            case "sql": return "cylinder"
+            default: return "doc.richtext"
+            }
+        }()
 
         return HStack(spacing: 5) {
             Image(systemName: icon)

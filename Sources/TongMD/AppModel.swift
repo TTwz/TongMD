@@ -290,7 +290,12 @@ final class AppModel: ObservableObject {
 
     var isPlainTextNote: Bool {
         guard let selection else { return false }
-        return selection.pathExtension.lowercased() == "txt"
+        let ext = selection.pathExtension.lowercased()
+        return ext == "txt" || ext == "sql"
+    }
+
+    var isSQLNote: Bool {
+        selection?.pathExtension.lowercased() == "sql"
     }
 
     var currentNote: Note? {
@@ -626,7 +631,8 @@ final class AppModel: ObservableObject {
         flushPendingSave()
 
         let parent = folder ?? vault
-        let ext = fileExtension.lowercased() == "txt" ? "txt" : "md"
+        let requested = fileExtension.lowercased()
+        let ext = (requested == "txt" || requested == "sql") ? requested : "md"
         var url = parent.appendingPathComponent("未命名.\(ext)")
         var index = 2
         while FileManager.default.fileExists(atPath: url.path) {
@@ -635,7 +641,7 @@ final class AppModel: ObservableObject {
         }
         do {
             let initial: String
-            if ext == "txt" {
+            if ext == "txt" || ext == "sql" {
                 initial = ""
             } else if noteTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 initial = "# \n"
@@ -1605,7 +1611,10 @@ final class AppModel: ObservableObject {
 
     private func renderPreview(url: URL, source: String) {
         let body: String
-        if url.pathExtension.lowercased() == "txt" {
+        let ext = url.pathExtension.lowercased()
+        if ext == "sql" {
+            body = Markdown.sqlBody(source)
+        } else if ext == "txt" {
             body = Markdown.plainBody(source)
         } else {
             body = Markdown.body(from: source, baseDirectory: url.deletingLastPathComponent())
@@ -1765,7 +1774,7 @@ final class AppModel: ObservableObject {
             let name = url.lastPathComponent
             if name == ".git" || name == "node_modules" { enumerator.skipDescendants(); continue }
             let ext = url.pathExtension.lowercased()
-            if ["md", "markdown", "txt"].contains(ext) { continue }
+            if VaultNode.noteExtensions.contains(ext) { continue }
             guard let values = try? url.resourceValues(forKeys: Set(keys)),
                   values.isRegularFile == true else { continue }
             let size = Int64(values.fileSize ?? 0)

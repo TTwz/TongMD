@@ -112,6 +112,8 @@ struct TongMDCommands: Commands {
                 .keyboardShortcut("o", modifiers: .command)
             Button("新建文本文件") { model.createNote(fileExtension: "txt") }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            Button("新建 SQL 文件") { model.createNote(fileExtension: "sql") }
+                .keyboardShortcut("n", modifiers: [.command, .control])
             Button("新建文件夹") { model.createFolder() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
         }

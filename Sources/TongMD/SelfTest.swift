@@ -1005,6 +1005,35 @@ enum SelfTest {
             let plainTitleFont = plainStorage.attributes(at: 0, effectiveRange: nil)[.font] as? NSFont
             check("txt 不做标题放大", abs((plainTitleFont?.pointSize ?? 0) - 15) < 0.5)
 
+            print("SQL 文件")
+            let sqlURL = txtRoot.appendingPathComponent("query.sql")
+            try "SELECT * FROM t WHERE a = 'x' -- 注释\n".write(to: sqlURL, atomically: true, encoding: .utf8)
+
+            let sqlNote = Note(url: sqlURL, root: txtRoot)
+            check("识别 sql 类型", sqlNote.isSQL)
+            check("sql 按纯文本编辑", sqlNote.isPlainText)
+            check("sql 图标是数据库", sqlNote.iconName == "cylinder")
+            check("扫描包含 sql", AppModel.buildTree(at: txtRoot, root: txtRoot).contains { $0.name == "query.sql" })
+            check("sql 算笔记不算附件", VaultNode.noteExtensions.contains("sql"))
+
+            let sqlBody = Markdown.sqlBody("SELECT * FROM t -- hi")
+            check("sql 预览包在代码块里", sqlBody.contains("<code class=\"language-sql\">"))
+            check("sql 关键字有高亮 span", sqlBody.contains("tok-kw"))
+            check("sql 注释有高亮 span", sqlBody.contains("tok-com"))
+
+            let sqlStorage = NSTextStorage(string: "SELECT 1 -- comment")
+            let sqlHighlighter = MarkdownSyntaxHighlighter()
+            sqlHighlighter.isPlainText = true
+            sqlHighlighter.codeLanguage = "sql"
+            sqlHighlighter.highlightAll(sqlStorage)
+            let keywordColor = sqlStorage.attributes(at: 0, effectiveRange: nil)[.foregroundColor] as? NSColor
+            let commentColor = sqlStorage.attributes(
+                at: (sqlStorage.string as NSString).range(of: "comment").location,
+                effectiveRange: nil
+            )[.foregroundColor] as? NSColor
+            check("编辑器里 SQL 关键字变色", keywordColor != nil && keywordColor != NSColor.labelColor)
+            check("编辑器里 SQL 注释变灰", commentColor == NSColor.secondaryLabelColor)
+
             print("新建/移动")
             let vaultRoot = root.appendingPathComponent("dest-vault")
             let selectedFolder = vaultRoot.appendingPathComponent("已存在")

@@ -8,8 +8,11 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
     /// 正文字号，标题与代码都按它按比例缩放
     var fontSize: CGFloat = 15
 
-    /// 纯文本（.txt）：只上基础属性，不解析 Markdown
+    /// 纯文本（.txt / .sql）：只上基础属性，不解析 Markdown
     var isPlainText = false
+
+    /// 纯文本里的语言（目前用于整篇 SQL 高亮）
+    var codeLanguage: String?
 
     /// 写作区背景色对应的配色；跟随系统时是动态语义色
     var palette: EditorPalette = .system
@@ -116,6 +119,7 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
         storage.setAttributes(baseAttributes, range: NSRange(location: start, length: end - start))
 
         if isPlainText {
+            applyCodeHighlight(storage, range: NSRange(location: start, length: end - start))
             storage.endEditing()
             return
         }
@@ -128,6 +132,39 @@ final class MarkdownSyntaxHighlighter: NSObject, NSTextStorageDelegate {
             index = NSMaxRange(lineRange)
         }
         storage.endEditing()
+    }
+
+    /// 整篇代码高亮（SQL 等）：注释 / 字符串 / 数字 / 关键字
+    private func applyCodeHighlight(_ storage: NSTextStorage, range: NSRange) {
+        guard let language = codeLanguage,
+              let keywords = Markdown.keywords(for: language), !keywords.isEmpty,
+              range.length > 0 else { return }
+
+        let comment = Markdown.commentPattern(for: language).map { "(" + $0 + ")" } ?? "(?!)"
+        let stringPattern = #""(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'"#
+        let numberPattern = #"\b\d+(?:\.\d+)?\b"#
+        let keywordPattern = "\\b(?:" + keywords.joined(separator: "|") + ")\\b"
+        let pattern = [comment, "(" + stringPattern + ")", "(" + numberPattern + ")", "(" + keywordPattern + ")"].joined(separator: "|")
+
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.anchorsMatchLines, .caseInsensitive]
+        ) else { return }
+
+        let text = storage.string
+        for match in regex.matches(in: text, range: range) {
+            let attributes: [NSAttributedString.Key: Any]
+            if match.range(at: 1).location != NSNotFound {
+                attributes = [.foregroundColor: palette.secondary]
+            } else if match.range(at: 2).location != NSNotFound {
+                attributes = [.foregroundColor: NSColor.systemGreen]
+            } else if match.range(at: 3).location != NSNotFound {
+                attributes = [.foregroundColor: NSColor.systemOrange]
+            } else {
+                attributes = [.foregroundColor: palette.link]
+            }
+            storage.addAttributes(attributes, range: match.range)
+        }
     }
 
     // MARK: - 单行

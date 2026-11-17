@@ -556,6 +556,19 @@ enum Markdown {
         )
     ]
 
+    static func keywords(for language: String) -> [String]? {
+        codeSpecs[language.lowercased()]?.keywords
+    }
+
+    static func commentPattern(for language: String) -> String? {
+        codeSpecs[language.lowercased()]?.comment
+    }
+
+    /// 整篇 SQL 文件：当作一个代码块渲染，复用代码高亮
+    static func sqlBody(_ text: String) -> String {
+        "<pre class=\"plain\"><code class=\"language-sql\">\(highlightedCode(text, language: "sql"))</code></pre>"
+    }
+
     /// 轻量代码高亮：只处理注释、字符串、数字、关键字；未知语言原样转义
     static func highlightedCode(_ code: String, language: String) -> String {
         let lang = language.lowercased()

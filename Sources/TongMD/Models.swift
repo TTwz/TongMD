@@ -14,13 +14,19 @@ struct Note: Identifiable, Hashable, Sendable {
 
     /// .txt 当纯文本处理：不渲染 Markdown，也不做语法高亮
     var isPlainText: Bool {
-        url.pathExtension.lowercased() == "txt"
+        let ext = url.pathExtension.lowercased()
+        return ext == "txt" || ext == "sql"
+    }
+
+    var isSQL: Bool {
+        url.pathExtension.lowercased() == "sql"
     }
 
     /// 侧栏图标按类型区分：Markdown 用带格式的文档，纯文本用 plaintext
     var iconName: String {
         switch url.pathExtension.lowercased() {
         case "txt": return "doc.plaintext"
+        case "sql": return "cylinder"
         case "md", "markdown": return "doc.richtext"
         default: return "doc.text"
         }
@@ -113,7 +119,7 @@ struct VaultNode: Identifiable, Hashable, Sendable {
         isDirectory ? name : (url.pathExtension.isEmpty ? name : url.deletingPathExtension().lastPathComponent)
     }
 
-    static let noteExtensions: Set<String> = ["md", "markdown", "txt"]
+    static let noteExtensions: Set<String> = ["md", "markdown", "txt", "sql"]
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "svg"]
 
     var isNote: Bool {
@@ -129,6 +135,7 @@ struct VaultNode: Identifiable, Hashable, Sendable {
         if isImage { return "photo" }
         switch url.pathExtension.lowercased() {
         case "txt": return "doc.plaintext"
+        case "sql": return "cylinder"
         case "md", "markdown": return "doc.richtext"
         default: return "doc.text"
         }
